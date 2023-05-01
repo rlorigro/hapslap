@@ -4,7 +4,7 @@ workflows:
     subclass: WDL
     description: Run PBSV on a BAM of aligned PB reads + a reference FASTA. Do NOT use this in your workflow. 
       This is a copy-paste from https://github.com/broadinstitute/long-read-pipelines/blob/main/wdl/tasks/VariantCalling/PBSV.wdl
-    primaryDescriptorPath: workflows/PBSV.wdl
+    primaryDescriptorPath: /workflows/PBSV.wdl
     testParameterFiles:
     authors:
       - name: Ryan Lorig-Roach
