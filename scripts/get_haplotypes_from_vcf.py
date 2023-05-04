@@ -26,11 +26,53 @@ def main():
     ref_path = "/home/ryan/data/human/reference/chm13v2.0.fa"
 
     vcf_paths = [
-        "/home/ryan/code/hapslap/data/test/hprc/HG002_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG005_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG002_chr20_sniffles.vcf.gz",
         "/home/ryan/code/hapslap/data/test/hprc/HG00438_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG005_chr20_sniffles.vcf.gz",
         "/home/ryan/code/hapslap/data/test/hprc/HG00621_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG01243_chr20_sniffles.vcf.gz"
+        # "/home/ryan/code/hapslap/data/test/hprc/HG00673_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG00733_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG00735_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG00741_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG01071_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG01106_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG01109_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG01123_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG01175_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG01243_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG01258_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG01358_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG01361_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG01891_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG01928_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG01952_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG01978_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG02055_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG02080_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG02109_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG02145_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG02148_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG02257_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG02486_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG02559_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG02572_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG02622_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG02630_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG02717_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG02723_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG02818_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG02886_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG03098_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG03453_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG03486_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG03492_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG03516_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG03540_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/HG03579_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/NA18906_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/NA19240_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/NA20129_chr20_sniffles.vcf.gz",
+        # "/home/ryan/code/hapslap/data/test/hprc/NA21309_chr20_sniffles.vcf.gz"
     ]
 
     chromosome = "chr20"
@@ -38,6 +80,8 @@ def main():
     region_stop = 47477018
 
     region_string = chromosome + ":" + str(region_start) + "-" + str(region_stop)
+
+    gfa_path = region_string + ".gfa"
 
     ref_sequence = FastaFile(ref_path).fetch("chr20")
 
@@ -63,45 +107,56 @@ def main():
                 print("ref_length:\t%d" % len(record.alleles[0]))
                 print("a_length:\t%d" % len(record.alleles[gt[0]]))
                 print("b_length:\t%d" % len(record.alleles[gt[1]]))
+                print("is_sv_precise:\t%d" % record.is_sv_precise)
 
                 # Iterate unique, non-ref alleles only
                 for allele_index in set(gt):
                     print(record.alleles[allele_index])
 
                     if allele_index != 0:
-                        l = len(record.alleles[allele_index])
+                        l = len(record.alleles[0]) if record.alleles[0] != 'N' else 0
 
                         # We are sorting by ref coordinates, so we use the ref allele start/stop to keep track of
                         # where the alt allele will be substituted
                         start = int(record.start)
-                        stop = start + len(record.alleles[0])
+                        stop = start + l
                         sequence = str(record.alleles[allele_index])
+                        sequence = sequence if sequence != 'N' else ''
 
                         # Collapse identical alleles by hashing them as a fn of start,stop,sequence
+                        # But keep track of which samples are collapsed together
                         a = Allele(start, stop, sequence)
                         alleles[a].add(sample_name)
 
     print()
 
     alleles = list(alleles.items())
-    overlapping_allele_indexes = list()
 
-    # Generate pointers to the allele data and sort them by allele start coord
-    allele_indexes = list(range(len(alleles)))
-    allele_indexes = sorted(allele_indexes, key=lambda x: alleles[x][0].start)
-
-    # Do a sweep over the sorted allele intervals to find overlapping ones
-    stop = -1
-    for i in allele_indexes:
-        if alleles[i][0].start <= stop:
-            overlapping_allele_indexes[-1].add(i)
-
-            if alleles[i][0].stop > stop:
-                stop = alleles[i][0].stop
-        else:
-            overlapping_allele_indexes.append({i})
-            stop = alleles[i][0].stop
-
+    # sample_to_allele_index = dict()
+    #
+    # # Build reverse mapping of sample -> allele_index
+    # for a,[allele,samples] in enumerate(alleles):
+    #     for sample in samples:
+    #         sample_to_allele_index[sample] = a
+    #
+    # # Generate pointers to the allele data and sort them by allele start coord
+    # allele_indexes = list(range(len(alleles)))
+    # allele_indexes = sorted(allele_indexes, key=lambda x: alleles[x][0].start)
+    #
+    # overlapping_allele_indexes = list()
+    #
+    # # Do a sweep over the sorted allele intervals to find overlapping ones
+    # stop = -1
+    # for i in allele_indexes:
+    #     if alleles[i][0].start <= stop:
+    #         overlapping_allele_indexes[-1].add(i)
+    #
+    #         if alleles[i][0].stop > stop:
+    #             stop = alleles[i][0].stop
+    #     else:
+    #         overlapping_allele_indexes.append({i})
+    #         stop = alleles[i][0].stop
+    #
     # # Print results
     # for i,item in enumerate(overlapping_allele_indexes):
     #     print(i)
@@ -110,51 +165,50 @@ def main():
     #         sample = alleles[allele_index][1]
     #         print(allele, sample)
 
+    # Construct a list of coordinates along the reference path which contain edges to VCF alleles
     ref_edges = defaultdict(lambda: [[],[]])
 
     for a,[allele,_] in enumerate(alleles):
         print(a)
         print(allele)
-
         ref_edges[allele.start][1].append(a)
         ref_edges[allele.stop][0].append(a)
 
+    # Append dummy item at end of list to make one-pass iteration easier
     ref_edges[region_stop] = [[],[]]
 
-    gfa_path = region_string + ".gfa"
+    # Sort the list by coord so that it can be iterated from left to right
+    ref_edges = list(sorted(ref_edges.items(), key=lambda x: x[0]))
 
+    # Save all the edges so they can be written separately at the end
     gfa_edge_lines = list()
 
+    # Construct GFA
     with open(gfa_path, 'w') as file:
-        # Construct GFA
+        # Initialize vars that will be iteration dependent
         prev_coord = region_start
-
-        for a,[allele,samples] in enumerate(alleles):
-            file.write("S\t%s\t%s\n" % ('_'.join([str(a)] + list(samples)),allele.sequence))
-
-        ref_edges = list(sorted(ref_edges.items(), key=lambda x: x[0]))
         in_edges = []
+
+        # First generate nodes for all the known VCF alleles
+        for allele_index,[allele,samples] in enumerate(alleles):
+            name = str(allele_index)
+            file.write("S\t%s\t%s\n" % (name,allele.sequence))
 
         r = 0
         for i,[coord,edges] in enumerate(ref_edges):
             id = "ref_" + str(r)
 
             for allele_index in in_edges:
-                samples = alleles[allele_index][1]
-                name = '_'.join([str(allele_index)] + list(samples))
+                name = str(allele_index)
                 gfa_edge_lines.append("L\t%s\t+\t%s\t+\t0M\n" % (name,id))
 
             for allele_index in edges[1]:
-                samples = alleles[allele_index][1]
-                name = '_'.join([str(allele_index)] + list(samples))
+                name = str(allele_index)
                 gfa_edge_lines.append("L\t%s\t+\t%s\t+\t0M\n" % (id,name))
 
             print(id, coord, edges)
 
             if i < len(ref_edges) - 1:
-                next_edges = ref_edges[i+1][1]
-
-                # if len(edges[1]) > 0 or len(next_edges[0]) > 0:
                 # Write ref sequence to GFA
                 sequence = ref_sequence[prev_coord:coord]
 
