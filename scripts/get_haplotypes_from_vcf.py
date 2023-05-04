@@ -1,4 +1,7 @@
 from collections import defaultdict
+from matplotlib import pyplot
+from networkx import DiGraph
+import networkx
 import os.path
 
 from vcf import VCFReader
@@ -11,6 +14,10 @@ class Allele:
         self.start = int(start)
         self.stop = int(stop)
         self.sequence = sequence
+        self.samples = set()
+
+    def add_sample(self, s):
+        self.samples.add(s)
 
     def __str__(self):
         return "[%s,%s]\t%s" % (self.start, self.stop, self.sequence)
@@ -21,8 +28,47 @@ class Allele:
     def __eq__(self, other):
         return (self.start, self.stop, self.sequence) == (other.start, other.stop, other.sequence)
 
+    def hash(self):
+        return self.__hash__()
+
+
+def path_recursion(graph, alleles, id, path_sequence=""):
+    path_sequence += alleles[id].sequence
+    print(id, len(path_sequence))
+
+    out_edges = graph.out_edges(id)
+    print(out_edges)
+
+    if len(out_edges) == 0:
+        yield path_sequence
+        pass
+    else:
+        for edge in out_edges:
+            print(edge[1])
+            yield from path_recursion(graph=graph, alleles=alleles, id=edge[1], path_sequence=path_sequence)
+
+
+def enumerate_paths(alleles, graph, output_directory):
+    start_id = next(networkx.topological_sort(graph))
+
+    print("Starting path recursion from %d" % start_id)
+
+    paths = [p for p in path_recursion(graph=graph, alleles=alleles, id=start_id)]
+
+    output_path = os.path.join(output_directory, "paths.fasta")
+    with open(output_path, 'w') as file:
+        for p,path in enumerate(paths):
+            file.write(">%d\n" % p)
+            file.write(path)
+            file.write('\n')
+
 
 def main():
+    output_directory = "/home/ryan/code/hapslap/data/test/region_1/"
+
+    if not os.path.exists(output_directory):
+        os.makedirs(output_directory)
+
     ref_path = "/home/ryan/data/human/reference/chm13v2.0.fa"
 
     vcf_paths = [
@@ -81,11 +127,12 @@ def main():
 
     region_string = chromosome + ":" + str(region_start) + "-" + str(region_stop)
 
-    gfa_path = region_string + ".gfa"
+    gfa_path = os.path.join(output_directory, region_string + ".gfa")
+    csv_path = os.path.join(output_directory, region_string + ".csv")
 
     ref_sequence = FastaFile(ref_path).fetch("chr20")
 
-    alleles = defaultdict(set)
+    alleles = dict()
 
     for vcf_path in vcf_paths:
         sample_name = os.path.basename(vcf_path).split("_")[0]
@@ -115,22 +162,29 @@ def main():
 
                     if allele_index != 0:
                         l = len(record.alleles[0]) if record.alleles[0] != 'N' else 0
+                        not_insert = (l >= len(record.alleles[allele_index]))
 
                         # We are sorting by ref coordinates, so we use the ref allele start/stop to keep track of
                         # where the alt allele will be substituted
                         start = int(record.start)
-                        stop = start + l
+                        stop = start + l + int(not_insert)
                         sequence = str(record.alleles[allele_index])
                         sequence = sequence if sequence != 'N' else ''
 
                         # Collapse identical alleles by hashing them as a fn of start,stop,sequence
                         # But keep track of which samples are collapsed together
                         a = Allele(start, stop, sequence)
-                        alleles[a].add(sample_name)
+                        h = a.hash()
+
+                        if h not in alleles:
+                            alleles[h] = a
+
+                        alleles[h].add_sample(sample_name)
 
     print()
 
-    alleles = list(alleles.items())
+    # Throw away hashes and keep unique alleles as a list
+    alleles = list(alleles.values())
 
     # sample_to_allele_index = dict()
     #
@@ -168,7 +222,7 @@ def main():
     # Construct a list of coordinates along the reference path which contain edges to VCF alleles
     ref_edges = defaultdict(lambda: [[],[]])
 
-    for a,[allele,_] in enumerate(alleles):
+    for a,allele in enumerate(alleles):
         print(a)
         print(allele)
         ref_edges[allele.start][1].append(a)
@@ -180,53 +234,110 @@ def main():
     # Sort the list by coord so that it can be iterated from left to right
     ref_edges = list(sorted(ref_edges.items(), key=lambda x: x[0]))
 
-    # Save all the edges so they can be written separately at the end
-    gfa_edge_lines = list()
+    graph = DiGraph()
 
-    # Construct GFA
-    with open(gfa_path, 'w') as file:
-        # Initialize vars that will be iteration dependent
-        prev_coord = region_start
-        in_edges = []
+    ref_id_offset = len(alleles)
 
-        # First generate nodes for all the known VCF alleles
-        for allele_index,[allele,samples] in enumerate(alleles):
-            name = str(allele_index)
-            file.write("S\t%s\t%s\n" % (name,allele.sequence))
+    # TODO: replace this with the actual reference name?
+    ref_sample_name = "ref"
 
-        r = 0
-        for i,[coord,edges] in enumerate(ref_edges):
-            id = "ref_" + str(r)
+    # -- Construct graph and ref alleles --
 
-            for allele_index in in_edges:
-                name = str(allele_index)
-                gfa_edge_lines.append("L\t%s\t+\t%s\t+\t0M\n" % (name,id))
+    # Initialize vars that will be iteration dependent
+    prev_coord = region_start
+    in_edges = []
 
-            for allele_index in edges[1]:
-                name = str(allele_index)
-                gfa_edge_lines.append("L\t%s\t+\t%s\t+\t0M\n" % (id,name))
+    # First generate nodes for all the known VCF alleles
+    for allele_index,allele in enumerate(alleles):
+        id = allele_index
+        graph.add_node(id)
 
-            print(id, coord, edges)
+    # Construct ref backbone nodes with sufficient breakpoints to capture all in/out allele edges
+    r = ref_id_offset
+    for i,[coord,edges] in enumerate(ref_edges):
+        id = r
 
-            if i < len(ref_edges) - 1:
-                # Write ref sequence to GFA
-                sequence = ref_sequence[prev_coord:coord]
+        print(id, coord, edges)
 
-                # Add edge to next ref sequence
-                next_id = "ref_" + str(r+1)
-                file.write("S\t%s\t%s\n" % (id,sequence))
-                gfa_edge_lines.append("L\t%s\t+\t%s\t+\t0M\n" % (id,next_id))
+        sequence = ref_sequence[prev_coord:coord]
 
-                prev_coord = coord
-                r += 1
-            else:
-                sequence = ref_sequence[prev_coord:coord]
-                file.write("S\t%s\t%s\n" % (id,sequence))
+        # Create Allele object for this ref node and mimic the allele data structure
+        a = Allele(start=prev_coord, stop=coord, sequence=sequence)
+        a.add_sample(ref_sample_name)
+        alleles.append(a)
 
-            in_edges = edges[0]
+        # Create the node in the graph data structure
+        graph.add_node(id)
 
-        for line in gfa_edge_lines:
-            file.write(line)
+        prev_coord = coord
+        r += 1
+
+    # Construct edges from reference backbone to existing alleles and other backbone nodes
+    r = ref_id_offset
+    for i,[coord,edges] in enumerate(ref_edges):
+        id = r
+
+        for allele_index in in_edges:
+            other_id = allele_index
+            graph.add_edge(other_id,id)
+
+        for allele_index in edges[1]:
+            other_id = allele_index
+            graph.add_edge(id,other_id)
+
+        # Add edge to next ref sequence
+        if i < len(ref_edges) - 1:
+            next_id = r+1
+            graph.add_edge(id,next_id)
+
+            r += 1
+
+        in_edges = edges[0]
+
+    # Enumerate paths
+    enumerate_paths(alleles=alleles, graph=graph, output_directory=output_directory)
+
+    sample_color = "#007cbe"
+    ref_color = "#bebebe"
+
+    # Write a csv that colors the nodes in Bandage
+    with open(csv_path, 'w') as csv_file:
+        csv_file.write("Name,Color\n")
+
+        for allele_index,allele in enumerate(alleles):
+            color = sample_color
+
+            if allele_index >= ref_id_offset:
+                color = ref_color
+
+            csv_file.write("%s,%s\n" % (allele_index,color))
+
+    # Write the GFA
+    with open(gfa_path, 'w') as gfa_file:
+        for allele_index,allele in enumerate(alleles):
+            gfa_file.write("S\t%s\t%s\n" % (str(allele_index),allele.sequence))
+
+        for e in graph.edges:
+            gfa_file.write("L\t%s\t+\t%s\t+\t0M\n" % (str(e[0]), str(e[1])))
+
+    # -- Plot the graph --
+    for layer, nodes in enumerate(networkx.topological_generations(graph)):
+        # `multipartite_layout` expects the layer as a node attribute, so add the
+        # numeric layer value as a node attribute
+        for node in nodes:
+            graph.nodes[node]["layer"] = layer
+
+    color_map = []
+    for a in range(len(alleles)):
+        if a >= ref_id_offset:
+            color_map.append(ref_color)
+        else:
+            color_map.append(sample_color)
+
+    pos = networkx.multipartite_layout(graph, subset_key="layer")
+    networkx.draw(graph, pos, connectionstyle="arc3,rad=-0.1", node_color=color_map, font_size=16, with_labels=True)
+    pyplot.show()
+    pyplot.close()
 
     return
 
