@@ -1,12 +1,13 @@
 from collections import defaultdict
-from matplotlib import pyplot
-from networkx import DiGraph
-import networkx
+from copy import deepcopy,copy
+import argparse
 import os.path
 
-from vcf import VCFReader
+from matplotlib import pyplot
+from networkx import DiGraph
 from pysam import FastaFile
-import argparse
+from vcf import VCFReader
+import networkx
 
 
 class Allele:
@@ -32,20 +33,18 @@ class Allele:
         return self.__hash__()
 
 
-def path_recursion(graph, alleles, id, path_sequence=""):
-    path_sequence += alleles[id].sequence
-    print(id, len(path_sequence))
+def path_recursion(graph, alleles, id, path_sequence=None):
+    if path_sequence is None:
+        path_sequence = list()
 
+    path_sequence.append(id)
     out_edges = graph.out_edges(id)
-    print(out_edges)
 
     if len(out_edges) == 0:
         yield path_sequence
-        pass
     else:
         for edge in out_edges:
-            print(edge[1])
-            yield from path_recursion(graph=graph, alleles=alleles, id=edge[1], path_sequence=path_sequence)
+            yield from path_recursion(graph=graph, alleles=alleles, id=edge[1], path_sequence=copy(path_sequence))
 
 
 def enumerate_paths(alleles, graph, output_directory):
@@ -57,75 +56,20 @@ def enumerate_paths(alleles, graph, output_directory):
 
     output_path = os.path.join(output_directory, "paths.fasta")
     with open(output_path, 'w') as file:
-        for p,path in enumerate(paths):
-            file.write(">%d\n" % p)
-            file.write(path)
+        for path in paths:
+            name = '_'.join([str(i) for i in path])
+            file.write(">%s\n" % name)
+            for i in path:
+                file.write("%s" % alleles[i].sequence)
+
             file.write('\n')
 
 
-def main():
-    output_directory = "/home/ryan/code/hapslap/data/test/region_1/"
+def vcf_to_graph(ref_path, vcf_paths, chromosome, ref_start, ref_stop, output_directory):
+    region_string = chromosome + ":" + str(ref_start) + "-" + str(ref_stop)
 
     if not os.path.exists(output_directory):
         os.makedirs(output_directory)
-
-    ref_path = "/home/ryan/data/human/reference/chm13v2.0.fa"
-
-    vcf_paths = [
-        # "/home/ryan/code/hapslap/data/test/hprc/HG002_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG00438_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG005_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG00621_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG00673_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG00733_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG00735_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG00741_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG01071_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG01106_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG01109_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG01123_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG01175_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG01243_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG01258_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG01358_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG01361_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG01891_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG01928_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG01952_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG01978_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG02055_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG02080_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG02109_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG02145_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG02148_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG02257_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG02486_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG02559_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG02572_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG02622_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG02630_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG02717_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG02723_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG02818_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG02886_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG03098_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG03453_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG03486_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG03492_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG03516_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG03540_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/HG03579_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/NA18906_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/NA19240_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/NA20129_chr20_sniffles.vcf.gz",
-        # "/home/ryan/code/hapslap/data/test/hprc/NA21309_chr20_sniffles.vcf.gz"
-    ]
-
-    chromosome = "chr20"
-    region_start = 47474020
-    region_stop = 47477018
-
-    region_string = chromosome + ":" + str(region_start) + "-" + str(region_stop)
 
     gfa_path = os.path.join(output_directory, region_string + ".gfa")
     csv_path = os.path.join(output_directory, region_string + ".csv")
@@ -186,39 +130,6 @@ def main():
     # Throw away hashes and keep unique alleles as a list
     alleles = list(alleles.values())
 
-    # sample_to_allele_index = dict()
-    #
-    # # Build reverse mapping of sample -> allele_index
-    # for a,[allele,samples] in enumerate(alleles):
-    #     for sample in samples:
-    #         sample_to_allele_index[sample] = a
-    #
-    # # Generate pointers to the allele data and sort them by allele start coord
-    # allele_indexes = list(range(len(alleles)))
-    # allele_indexes = sorted(allele_indexes, key=lambda x: alleles[x][0].start)
-    #
-    # overlapping_allele_indexes = list()
-    #
-    # # Do a sweep over the sorted allele intervals to find overlapping ones
-    # stop = -1
-    # for i in allele_indexes:
-    #     if alleles[i][0].start <= stop:
-    #         overlapping_allele_indexes[-1].add(i)
-    #
-    #         if alleles[i][0].stop > stop:
-    #             stop = alleles[i][0].stop
-    #     else:
-    #         overlapping_allele_indexes.append({i})
-    #         stop = alleles[i][0].stop
-    #
-    # # Print results
-    # for i,item in enumerate(overlapping_allele_indexes):
-    #     print(i)
-    #     for allele_index in item:
-    #         allele = alleles[allele_index][0]
-    #         sample = alleles[allele_index][1]
-    #         print(allele, sample)
-
     # Construct a list of coordinates along the reference path which contain edges to VCF alleles
     ref_edges = defaultdict(lambda: [[],[]])
 
@@ -229,7 +140,7 @@ def main():
         ref_edges[allele.stop][0].append(a)
 
     # Append dummy item at end of list to make one-pass iteration easier
-    ref_edges[region_stop] = [[],[]]
+    ref_edges[ref_stop] = [[],[]]
 
     # Sort the list by coord so that it can be iterated from left to right
     ref_edges = list(sorted(ref_edges.items(), key=lambda x: x[0]))
@@ -244,7 +155,7 @@ def main():
     # -- Construct graph and ref alleles --
 
     # Initialize vars that will be iteration dependent
-    prev_coord = region_start
+    prev_coord = ref_start
     in_edges = []
 
     # First generate nodes for all the known VCF alleles
@@ -294,23 +205,23 @@ def main():
 
         in_edges = edges[0]
 
-    # Enumerate paths
-    enumerate_paths(alleles=alleles, graph=graph, output_directory=output_directory)
+    sample_color = "#bebebe"
+    ref_color = "#007cbe"
 
-    sample_color = "#007cbe"
-    ref_color = "#bebebe"
-
-    # Write a csv that colors the nodes in Bandage
+    # Write a csv that keeps track of ref coords, is_ref
     with open(csv_path, 'w') as csv_file:
-        csv_file.write("Name,Color\n")
+        csv_file.write("id,ref_start,ref_stop,is_ref,color\n")
 
         for allele_index,allele in enumerate(alleles):
             color = sample_color
 
+            is_ref = False
             if allele_index >= ref_id_offset:
                 color = ref_color
+                is_ref = True
 
-            csv_file.write("%s,%s\n" % (allele_index,color))
+            csv_file.write(','.join(list(map(str,[allele_index,allele.start,allele.stop,int(is_ref),color]))))
+            csv_file.write('\n')
 
     # Write the GFA
     with open(gfa_path, 'w') as gfa_file:
@@ -335,11 +246,106 @@ def main():
             color_map.append(sample_color)
 
     pos = networkx.multipartite_layout(graph, subset_key="layer")
-    networkx.draw(graph, pos, connectionstyle="arc3,rad=-0.1", node_color=color_map, font_size=16, with_labels=True)
-    pyplot.show()
-    pyplot.close()
+
+    n_ref = len(alleles) - ref_id_offset
+    width = 1 + (n_ref*0.3)
+    height = 1 + (n_ref*0.07)
+    f = pyplot.figure(figsize=(width, height), dpi=200)
+
+    networkx.draw(
+        graph,
+        pos,
+        connectionstyle="arc3,rad=-0.35",
+        node_color=color_map,
+        node_size=100,
+        font_size=8,
+        width=0.6,
+        arrowsize=3,
+        with_labels=True)
+
+    figure_path = os.path.join(output_directory, "dag.png")
+    pyplot.savefig(figure_path, dpi=200)
+
+    # pyplot.show()
+    # pyplot.close()
+
+    # Enumerate paths
+    enumerate_paths(alleles=alleles, graph=graph, output_directory=output_directory)
 
     return
+
+
+def main():
+    ref_path = "/home/ryan/data/human/reference/chm13v2.0.fa"
+
+    vcf_paths = [
+        "/home/ryan/code/hapslap/data/test/hprc/HG002_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG00438_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG005_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG00621_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG00673_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG00733_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG00735_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG00741_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG01071_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG01106_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG01109_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG01123_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG01175_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG01243_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG01258_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG01358_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG01361_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG01891_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG01928_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG01952_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG01978_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG02055_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG02080_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG02109_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG02145_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG02148_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG02257_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG02486_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG02559_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG02572_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG02622_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG02630_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG02717_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG02723_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG02818_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG02886_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG03098_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG03453_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG03486_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG03492_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG03516_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG03540_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/HG03579_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/NA18906_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/NA19240_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/NA20129_chr20_sniffles.vcf.gz",
+        "/home/ryan/code/hapslap/data/test/hprc/NA21309_chr20_sniffles.vcf.gz"
+    ]
+
+    chromosome = "chr20"
+    ref_start = 47474020
+    ref_stop = 47477018
+
+    # chromosome = "chr20"
+    # region_start = 54974920
+    # region_stop = 54977307
+
+    output_directory = "/home/ryan/data/test_hapslap/output/"
+
+    vcf_to_graph(
+        ref_path=ref_path,
+        vcf_paths=vcf_paths,
+        chromosome=chromosome,
+        ref_start=ref_start,
+        ref_stop=ref_stop,
+        output_directory=output_directory
+    )
 
 
 if __name__ == "__main__":

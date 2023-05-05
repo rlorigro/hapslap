@@ -15,12 +15,6 @@ def download_bam(output_directory, bam_path, region_string, tokenator, index=Tru
 
     tokenator.update_environment()
 
-    # sniffles \
-    # --input /home/ryan/data/test_hapslap/hg00733_1fc_chr20.bam \
-    # --vcf /home/ryan/data/test_hapslap/hg00733_1fc_chr20_sniffles.vcf \
-    # --reference /home/ryan/data/human/reference/chm13v2.0.fa \
-    # --threads 30 \
-    # --output-rnames
     args = [
         "samtools",
         "view",
