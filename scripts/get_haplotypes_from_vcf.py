@@ -1,5 +1,10 @@
+from modules.Authenticator import *
+from modules.GsUri import *
+
 from collections import defaultdict
+from multiprocessing import Pool
 from copy import deepcopy,copy
+import subprocess
 import argparse
 import os.path
 
@@ -31,6 +36,109 @@ class Allele:
 
     def hash(self):
         return self.__hash__()
+
+
+def write_graph_to_gfa(output_path, graph, alleles):
+    with open(output_path, 'w') as gfa_file:
+        for allele_index in graph.nodes:
+            gfa_file.write("S\t%s\t%s\n" % (str(allele_index),alleles[allele_index].sequence))
+
+        for e in graph.edges:
+            gfa_file.write("L\t%s\t+\t%s\t+\t0M\n" % (str(e[0]), str(e[1])))
+
+
+def plot_graph(graph, ref_id_offset, ref_color, sample_color, output_path):
+    for layer, nodes in enumerate(networkx.topological_generations(graph)):
+        # `multipartite_layout` expects the layer as a node attribute, so add the
+        # numeric layer value as a node attribute
+        for node in nodes:
+            graph.nodes[node]["layer"] = layer
+
+    color_map = []
+    for n in graph.nodes:
+        if n >= ref_id_offset:
+            color_map.append(ref_color)
+        else:
+            color_map.append(sample_color)
+
+    pos = networkx.multipartite_layout(graph, subset_key="layer")
+
+    n_ref = graph.number_of_nodes() - ref_id_offset
+    width = 1 + (n_ref*0.3)
+    height = 1 + (n_ref*0.07)
+    f = pyplot.figure(figsize=(width, height), dpi=200)
+
+    networkx.draw(
+        graph,
+        pos,
+        connectionstyle="arc3,rad=-0.35",
+        node_color=color_map,
+        node_size=100,
+        font_size=8,
+        width=0.6,
+        arrowsize=3,
+        with_labels=True)
+
+    pyplot.savefig(output_path, dpi=200)
+
+
+def get_region_from_bam(output_directory, bam_path, region_string, tokenator, timeout=60*20):
+    prefix = os.path.basename(bam_path).split('.')[0]
+    filename = prefix + "_" + region_string.replace(":","_") + ".bam"
+    local_bam_path = os.path.join(output_directory, filename)
+
+    # Enable caching by path name
+    if os.path.exists(local_bam_path):
+        return local_bam_path
+
+    tokenator.update_environment()
+
+    args = [
+        "samtools",
+        "view",
+        "-bh",
+        "-o", local_bam_path,
+        bam_path,
+        region_string
+    ]
+
+    sys.stderr.write(" ".join(args)+'\n')
+
+    try:
+        p1 = subprocess.run(args, check=True, stderr=subprocess.PIPE, timeout=timeout)
+
+    except subprocess.CalledProcessError as e:
+        sys.stderr.write("Status: FAIL " + '\n' + (e.stderr.decode("utf8") if e.stderr is not None else "") + '\n')
+        sys.stderr.flush()
+        return None
+
+    except subprocess.TimeoutExpired as e:
+        sys.stderr.write("Status: FAIL due to timeout " + '\n' + (e.stderr.decode("utf8") if e.stderr is not None else "") + '\n')
+        sys.stderr.flush()
+        return None
+
+    return local_bam_path
+
+
+def get_reads_from_bam(output_path, bam_path, token):
+    samtools_args = ["samtools", "fasta", bam_path]
+
+    with open(output_path, 'a') as file:
+        sys.stderr.write(" ".join(samtools_args)+'\n')
+
+        token.update_environment()
+        try:
+            p1 = subprocess.run(samtools_args, stdout=file, check=True, stderr=subprocess.PIPE)
+
+        except subprocess.CalledProcessError as e:
+            sys.stderr.write("Status : FAIL " + '\n' + (e.stderr.decode("utf8") if e.stderr is not None else "") + '\n')
+            sys.stderr.flush()
+            return False
+        except Exception as e:
+            sys.stderr.write(str(e))
+            return False
+
+    return output_path
 
 
 def path_recursion(graph, alleles, id, path_sequence=None):
@@ -65,7 +173,7 @@ def enumerate_paths(alleles, graph, output_directory):
             file.write('\n')
 
 
-def vcf_to_graph(ref_path, vcf_paths, chromosome, ref_start, ref_stop, output_directory):
+def vcf_to_graph(ref_path, vcf_paths, chromosome, ref_start, ref_stop, output_directory, padding=20000):
     region_string = chromosome + ":" + str(ref_start) + "-" + str(ref_stop)
 
     if not os.path.exists(output_directory):
@@ -124,6 +232,9 @@ def vcf_to_graph(ref_path, vcf_paths, chromosome, ref_start, ref_stop, output_di
                             alleles[h] = a
 
                         alleles[h].add_sample(sample_name)
+
+    ref_start -= padding
+    ref_stop += padding
 
     print()
 
@@ -224,119 +335,159 @@ def vcf_to_graph(ref_path, vcf_paths, chromosome, ref_start, ref_stop, output_di
             csv_file.write('\n')
 
     # Write the GFA
-    with open(gfa_path, 'w') as gfa_file:
-        for allele_index,allele in enumerate(alleles):
-            gfa_file.write("S\t%s\t%s\n" % (str(allele_index),allele.sequence))
+    write_graph_to_gfa(output_path=gfa_path, graph=graph, alleles=alleles)
 
-        for e in graph.edges:
-            gfa_file.write("L\t%s\t+\t%s\t+\t0M\n" % (str(e[0]), str(e[1])))
+    # Plot the graph
+    plot_path = os.path.join(output_directory, "dag.png")
+    plot_graph(
+        graph=graph,
+        ref_id_offset=ref_id_offset,
+        ref_color=ref_color,
+        sample_color=sample_color,
+        output_path=plot_path
+    )
 
-    # -- Plot the graph --
-    for layer, nodes in enumerate(networkx.topological_generations(graph)):
-        # `multipartite_layout` expects the layer as a node attribute, so add the
-        # numeric layer value as a node attribute
-        for node in nodes:
-            graph.nodes[node]["layer"] = layer
+    # Remove empty nodes
+    empty_nodes = list()
+    for n in graph.nodes:
+        if len(alleles[n].sequence) == 0:
+            empty_nodes.append(n)
 
-    color_map = []
-    for a in range(len(alleles)):
-        if a >= ref_id_offset:
-            color_map.append(ref_color)
-        else:
-            color_map.append(sample_color)
+    for n in empty_nodes:
+        a_nodes = [e[0] for e in graph.in_edges(n)]
+        b_nodes = [e[1] for e in graph.out_edges(n)]
 
-    pos = networkx.multipartite_layout(graph, subset_key="layer")
+        for a in a_nodes:
+            for b in b_nodes:
+                graph.add_edge(a,b)
 
-    n_ref = len(alleles) - ref_id_offset
-    width = 1 + (n_ref*0.3)
-    height = 1 + (n_ref*0.07)
-    f = pyplot.figure(figsize=(width, height), dpi=200)
+        graph.remove_node(n)
 
-    networkx.draw(
-        graph,
-        pos,
-        connectionstyle="arc3,rad=-0.35",
-        node_color=color_map,
-        node_size=100,
-        font_size=8,
-        width=0.6,
-        arrowsize=3,
-        with_labels=True)
+    # Write the GFA
+    gfa_path = gfa_path.replace(".gfa", "_no_empty.gfa")
+    write_graph_to_gfa(output_path=gfa_path, graph=graph, alleles=alleles)
 
-    figure_path = os.path.join(output_directory, "dag.png")
-    pyplot.savefig(figure_path, dpi=200)
-
-    # pyplot.show()
-    # pyplot.close()
+    # Plot the graph
+    plot_path = os.path.join(output_directory, "dag_no_empty.png")
+    plot_graph(
+        graph=graph,
+        ref_id_offset=ref_id_offset,
+        ref_color=ref_color,
+        sample_color=sample_color,
+        output_path=plot_path
+    )
 
     # Enumerate paths
-    enumerate_paths(alleles=alleles, graph=graph, output_directory=output_directory)
+    # enumerate_paths(alleles=alleles, graph=graph, output_directory=output_directory)
 
     return
 
 
 def main():
+    output_directory = "/home/ryan/data/test_hapslap/output/"
+
+    if not os.path.exists(output_directory):
+        os.makedirs(output_directory)
+    else:
+        exit("ERROR: output directory exists already: %s" % output_directory)
+
     ref_path = "/home/ryan/data/human/reference/chm13v2.0.fa"
 
-    vcf_paths = [
-        "/home/ryan/code/hapslap/data/test/hprc/HG002_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG00438_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG005_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG00621_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG00673_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG00733_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG00735_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG00741_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG01071_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG01106_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG01109_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG01123_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG01175_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG01243_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG01258_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG01358_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG01361_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG01891_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG01928_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG01952_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG01978_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG02055_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG02080_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG02109_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG02145_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG02148_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG02257_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG02486_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG02559_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG02572_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG02622_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG02630_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG02717_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG02723_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG02818_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG02886_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG03098_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG03453_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG03486_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG03492_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG03516_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG03540_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/HG03579_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/NA18906_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/NA19240_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/NA20129_chr20_sniffles.vcf.gz",
-        "/home/ryan/code/hapslap/data/test/hprc/NA21309_chr20_sniffles.vcf.gz"
+    input_directory = "/home/ryan/code/hapslap/data/test/hprc/"
+
+    sample_names = [
+        "HG002",
+        "HG00438",
+        "HG005",
+        "HG00621",
+        "HG00673",
+        "HG00733",
+        "HG00735",
+        "HG00741",
+        "HG01071",
+        "HG01106",
+        "HG01109",
+        "HG01123",
+        "HG01175",
+        "HG01243",
+        "HG01258",
+        "HG01358",
+        "HG01361",
+        "HG01891",
+        "HG01928",
+        "HG01952",
+        "HG01978",
+        "HG02055",
+        "HG02080",
+        "HG02109",
+        "HG02145",
+        "HG02148",
+        "HG02257",
+        "HG02486",
+        "HG02559",
+        "HG02572",
+        "HG02622",
+        "HG02630",
+        "HG02717",
+        "HG02723",
+        "HG02818",
+        "HG02886",
+        "HG03098",
+        "HG03453",
+        "HG03486",
+        "HG03492",
+        "HG03516",
+        "HG03540",
+        "HG03579",
+        "NA18906",
+        "NA19240",
+        "NA20129",
+        "NA21309"
     ]
 
+    data_per_sample = defaultdict(dict)
+
+    for filename in os.listdir(input_directory):
+        path = os.path.join(input_directory, filename)
+
+        for name in sample_names:
+            if name in filename:
+                if filename.endswith(".bam"):
+                    data_per_sample[name]["bam"] = path
+                if filename.endswith(".vcf.gz"):
+                    data_per_sample[name]["vcf"] = path
+
+    vcf_paths = list()
+    bam_paths = list()
+
+    for name in data_per_sample:
+        has_vcf = False
+        has_bam = False
+
+        if "vcf" in data_per_sample[name]:
+            has_vcf = True
+            vcf_paths.append(data_per_sample[name]["vcf"])
+        if "bam" in data_per_sample[name]:
+            has_bam = True
+            bam_paths.append(data_per_sample[name]["bam"])
+
+        if (not has_vcf) or (not has_bam):
+            exit("ERROR: sample does not have both a BAM and a VCF")
+
+        print(name)
+        print("vcf", data_per_sample[name]["vcf"])
+        print("bam", data_per_sample[name]["bam"])
+
     chromosome = "chr20"
-    ref_start = 47474020
-    ref_stop = 47477018
+    # ref_start = 47474020
+    # ref_stop = 47477018
 
-    # chromosome = "chr20"
-    # region_start = 54974920
-    # region_stop = 54977307
+    ref_start = 54974920
+    ref_stop = 54977307
 
-    output_directory = "/home/ryan/data/test_hapslap/output/"
+    region_string = chromosome + ":" + str(ref_start) + "-" + str(ref_stop)
+
+    tokenator = GoogleToken()
 
     vcf_to_graph(
         ref_path=ref_path,
@@ -346,6 +497,24 @@ def main():
         ref_stop=ref_stop,
         output_directory=output_directory
     )
+
+    output_fasta_path = os.path.join(output_directory, "reads.fasta")
+
+    for path in bam_paths:
+        print("bam_path:", path)
+
+        region_bam_path = get_region_from_bam(
+            output_directory=output_directory,
+            bam_path=path,
+            region_string=region_string,
+            tokenator=tokenator
+        )
+
+        get_reads_from_bam(
+            output_path=output_fasta_path,
+            bam_path=region_bam_path,
+            token=tokenator
+        )
 
 
 if __name__ == "__main__":

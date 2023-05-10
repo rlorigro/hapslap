@@ -9,7 +9,7 @@ def download_bam(output_directory, bam_path, region_string, tokenator, index=Tru
     local_bam_filename = sample_name + "_" + region_string.replace(":","_") + ".bam"
     local_bam_path = os.path.join(output_directory,local_bam_filename)
 
-    # Don't re-download
+    # Enable caching by path name
     if os.path.exists(local_bam_path):
         return local_bam_path
 
@@ -59,6 +59,7 @@ def download_bam(output_directory, bam_path, region_string, tokenator, index=Tru
 def run_sniffles(ref_path, bam_path, n_threads, timeout=60*3):
     output_path = bam_path.replace(".bam", "_sniffles.vcf")
 
+    # Enable caching by path name
     if os.path.exists(output_path):
         return output_path
 
@@ -99,6 +100,7 @@ def compress_and_index_vcf(vcf_path, timeout=60*3):
     output_vcf_path = vcf_path + ".gz"
     output_tbi_path = output_vcf_path + ".tbi"
 
+    # Enable caching by path name
     if os.path.exists(output_vcf_path) and os.path.exists(output_tbi_path):
         return output_vcf_path
 
