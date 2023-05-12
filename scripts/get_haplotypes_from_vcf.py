@@ -7,6 +7,7 @@ from copy import deepcopy,copy
 import subprocess
 import argparse
 import os.path
+import re
 
 from matplotlib import pyplot
 from networkx import DiGraph
@@ -47,7 +48,7 @@ def write_graph_to_gfa(output_path, graph, alleles):
             gfa_file.write("L\t%s\t+\t%s\t+\t0M\n" % (str(e[0]), str(e[1])))
 
 
-def plot_graph(graph, ref_id_offset, ref_color, sample_color, output_path):
+def plot_graph(graph, ref_id_offset, ref_color, sample_color, output_path, line_style='-', draw_edge_weight_overlay=False):
     for layer, nodes in enumerate(networkx.topological_generations(graph)):
         # `multipartite_layout` expects the layer as a node attribute, so add the
         # numeric layer value as a node attribute
@@ -64,22 +65,46 @@ def plot_graph(graph, ref_id_offset, ref_color, sample_color, output_path):
     pos = networkx.multipartite_layout(graph, subset_key="layer")
 
     n_ref = graph.number_of_nodes() - ref_id_offset
-    width = 1 + (n_ref*0.3)
-    height = 1 + (n_ref*0.07)
-    f = pyplot.figure(figsize=(width, height), dpi=200)
+    width = 1 + (n_ref*0.7)
+    height = 1 + (n_ref*0.1)
+    f = pyplot.figure(figsize=(width, height))
+    a = pyplot.axes()
+
+    node_size = 30
 
     networkx.draw(
         graph,
         pos,
         connectionstyle="arc3,rad=-0.35",
         node_color=color_map,
-        node_size=100,
-        font_size=8,
+        node_size=node_size,
+        style=line_style,
+        font_size=4,
         width=0.6,
         arrowsize=3,
         with_labels=True)
 
-    pyplot.savefig(output_path, dpi=200)
+    if draw_edge_weight_overlay:
+        for edge in graph.edges(data='weight'):
+            print(edge)
+
+            networkx.draw_networkx_edges(
+                graph,
+                pos,
+                edgelist=[edge],
+                width=edge[2],
+                connectionstyle="arc3,rad=-0.35",
+                arrowstyle='-',
+                node_size=node_size,
+                alpha=0.6,
+                edge_color="#000000"
+            )
+
+    ylim = list(a.get_ylim())
+    ylim[0] -= 0.5
+    a.set_ylim(ylim)
+
+    pyplot.savefig(output_path, dpi=300)
 
 
 def get_region_from_bam(output_directory, bam_path, region_string, tokenator, timeout=60*20):
@@ -141,6 +166,33 @@ def get_reads_from_bam(output_path, bam_path, token):
     return output_path
 
 
+def run_minigraph(output_directory, gfa_path, fasta_path):
+    output_path = os.path.join(output_directory, "reads_vs_graph.gaf")
+
+    # minigraph \
+    # -cx lr \
+    # -o reads_vs_graph.gaf \
+    # graph.gfa \
+    # reads.fasta \
+    args = ["minigraph", "-c", "-x", "lr", "-o", output_path, gfa_path, fasta_path]
+
+    with open(output_path, 'a') as file:
+        sys.stderr.write(" ".join(args)+'\n')
+
+        try:
+            p1 = subprocess.run(args, stdout=file, check=True, stderr=subprocess.PIPE)
+
+        except subprocess.CalledProcessError as e:
+            sys.stderr.write("Status : FAIL " + '\n' + (e.stderr.decode("utf8") if e.stderr is not None else "") + '\n')
+            sys.stderr.flush()
+            return False
+        except Exception as e:
+            sys.stderr.write(str(e))
+            return False
+
+    return output_path
+
+
 def path_recursion(graph, alleles, id, path_sequence=None):
     if path_sequence is None:
         path_sequence = list()
@@ -173,14 +225,43 @@ def enumerate_paths(alleles, graph, output_directory):
             file.write('\n')
 
 
-def vcf_to_graph(ref_path, vcf_paths, chromosome, ref_start, ref_stop, output_directory, padding=20000):
+def update_edge_weights_using_alignments(gaf_path, graph, max_width=5.0):
+    max_weight = 0.0
+
+    with open(gaf_path, 'r') as file:
+        for l,line in enumerate(file):
+            tokens = line.strip().split('\t')
+
+            path = re.split('[><]', tokens[5][1:])
+
+            for i in range(len(path) - 1):
+                a = int(path[i])
+                b = int(path[i+1])
+
+                print(a,b)
+
+                if graph.has_edge(a,b):
+                    print(graph[a][b]["weight"])
+                    graph[a][b]["weight"] += 1
+                    print(graph[a][b]["weight"])
+
+                    if graph[a][b]["weight"] > max_weight:
+                        max_weight = graph[a][b]["weight"]
+
+                if graph.has_edge(b,a):
+                    graph[b][a]["weight"] += 1
+                    if graph[b][a]["weight"] > max_weight:
+                        max_weight = graph[b][a]["weight"]
+
+    for edge in graph.edges:
+        if graph[edge[0]][edge[1]]["weight"] > 0:
+            graph[edge[0]][edge[1]]["weight"] /= max_weight/max_width
+
+    return graph
+
+
+def vcf_to_graph(ref_path, vcf_paths, chromosome, ref_start, ref_stop, ref_sample_name, padding=20000):
     region_string = chromosome + ":" + str(ref_start) + "-" + str(ref_stop)
-
-    if not os.path.exists(output_directory):
-        os.makedirs(output_directory)
-
-    gfa_path = os.path.join(output_directory, region_string + ".gfa")
-    csv_path = os.path.join(output_directory, region_string + ".csv")
 
     ref_sequence = FastaFile(ref_path).fetch("chr20")
 
@@ -260,9 +341,6 @@ def vcf_to_graph(ref_path, vcf_paths, chromosome, ref_start, ref_stop, output_di
 
     ref_id_offset = len(alleles)
 
-    # TODO: replace this with the actual reference name?
-    ref_sample_name = "ref"
-
     # -- Construct graph and ref alleles --
 
     # Initialize vars that will be iteration dependent
@@ -301,90 +379,26 @@ def vcf_to_graph(ref_path, vcf_paths, chromosome, ref_start, ref_stop, output_di
 
         for allele_index in in_edges:
             other_id = allele_index
-            graph.add_edge(other_id,id)
+            graph.add_edge(other_id,id, weight=0)
 
         for allele_index in edges[1]:
             other_id = allele_index
-            graph.add_edge(id,other_id)
+            graph.add_edge(id,other_id, weight=0)
 
         # Add edge to next ref sequence
         if i < len(ref_edges) - 1:
             next_id = r+1
-            graph.add_edge(id,next_id)
+            graph.add_edge(id,next_id, weight=0)
 
             r += 1
 
         in_edges = edges[0]
 
-    sample_color = "#bebebe"
-    ref_color = "#007cbe"
-
-    # Write a csv that keeps track of ref coords, is_ref
-    with open(csv_path, 'w') as csv_file:
-        csv_file.write("id,ref_start,ref_stop,is_ref,color\n")
-
-        for allele_index,allele in enumerate(alleles):
-            color = sample_color
-
-            is_ref = False
-            if allele_index >= ref_id_offset:
-                color = ref_color
-                is_ref = True
-
-            csv_file.write(','.join(list(map(str,[allele_index,allele.start,allele.stop,int(is_ref),color]))))
-            csv_file.write('\n')
-
-    # Write the GFA
-    write_graph_to_gfa(output_path=gfa_path, graph=graph, alleles=alleles)
-
-    # Plot the graph
-    plot_path = os.path.join(output_directory, "dag.png")
-    plot_graph(
-        graph=graph,
-        ref_id_offset=ref_id_offset,
-        ref_color=ref_color,
-        sample_color=sample_color,
-        output_path=plot_path
-    )
-
-    # Remove empty nodes
-    empty_nodes = list()
-    for n in graph.nodes:
-        if len(alleles[n].sequence) == 0:
-            empty_nodes.append(n)
-
-    for n in empty_nodes:
-        a_nodes = [e[0] for e in graph.in_edges(n)]
-        b_nodes = [e[1] for e in graph.out_edges(n)]
-
-        for a in a_nodes:
-            for b in b_nodes:
-                graph.add_edge(a,b)
-
-        graph.remove_node(n)
-
-    # Write the GFA
-    gfa_path = gfa_path.replace(".gfa", "_no_empty.gfa")
-    write_graph_to_gfa(output_path=gfa_path, graph=graph, alleles=alleles)
-
-    # Plot the graph
-    plot_path = os.path.join(output_directory, "dag_no_empty.png")
-    plot_graph(
-        graph=graph,
-        ref_id_offset=ref_id_offset,
-        ref_color=ref_color,
-        sample_color=sample_color,
-        output_path=plot_path
-    )
-
-    # Enumerate paths
-    # enumerate_paths(alleles=alleles, graph=graph, output_directory=output_directory)
-
-    return
+    return graph, alleles
 
 
 def main():
-    output_directory = "/home/ryan/data/test_hapslap/output/"
+    output_directory = "/home/ryan/data/test_hapslap/output2/"
 
     if not os.path.exists(output_directory):
         os.makedirs(output_directory)
@@ -479,24 +493,100 @@ def main():
         print("bam", data_per_sample[name]["bam"])
 
     chromosome = "chr20"
-    # ref_start = 47474020
-    # ref_stop = 47477018
+    ref_start = 47474020
+    ref_stop = 47477018
 
-    ref_start = 54974920
-    ref_stop = 54977307
+    # ref_start = 54974920
+    # ref_stop = 54977307
 
     region_string = chromosome + ":" + str(ref_start) + "-" + str(ref_stop)
 
     tokenator = GoogleToken()
 
-    vcf_to_graph(
+    csv_path = os.path.join(output_directory, "nodes.csv")
+
+    # TODO: make this a function of the actual reference version used
+    ref_sample_name = "ref"
+
+    graph,alleles = vcf_to_graph(
         ref_path=ref_path,
         vcf_paths=vcf_paths,
         chromosome=chromosome,
         ref_start=ref_start,
         ref_stop=ref_stop,
-        output_directory=output_directory
-    )
+        ref_sample_name=ref_sample_name)
+
+    ref_id_offset = None
+    for i in range(len(alleles)):
+        if alleles[i].samples == {ref_sample_name}:
+            ref_id_offset = i
+            break
+
+    print("ref_id_offset:", ref_id_offset)
+
+    output_gfa_path = os.path.join(output_directory, "graph.gfa")
+
+    sample_color = "#bebebe"
+    ref_color = "#007cbe"
+
+    # Write a csv that keeps track of ref coords, is_ref
+    with open(csv_path, 'w') as csv_file:
+        csv_file.write("id,ref_start,ref_stop,is_ref,color\n")
+
+        for allele_index,allele in enumerate(alleles):
+            color = sample_color
+
+            is_ref = False
+            if allele_index >= ref_id_offset:
+                color = ref_color
+                is_ref = True
+
+            csv_file.write(','.join(list(map(str,[allele_index,allele.start,allele.stop,int(is_ref),color]))))
+            csv_file.write('\n')
+
+    # Write the GFA
+    write_graph_to_gfa(output_path=output_gfa_path, graph=graph, alleles=alleles)
+
+    # Plot the graph
+    plot_path = os.path.join(output_directory, "dag.png")
+    plot_graph(
+        graph=graph,
+        ref_id_offset=ref_id_offset,
+        ref_color=ref_color,
+        sample_color=sample_color,
+        output_path=plot_path)
+
+    # Remove empty nodes
+    empty_nodes = list()
+    for n in graph.nodes:
+        if len(alleles[n].sequence) == 0:
+            empty_nodes.append(n)
+
+    for n in empty_nodes:
+        a_nodes = [e[0] for e in graph.in_edges(n)]
+        b_nodes = [e[1] for e in graph.out_edges(n)]
+
+        for a in a_nodes:
+            for b in b_nodes:
+                graph.add_edge(a,b, weight=0)
+
+        graph.remove_node(n)
+
+    # Write the GFA
+    output_gfa_path = output_gfa_path.replace(".gfa", "_no_empty.gfa")
+    write_graph_to_gfa(output_path=output_gfa_path, graph=graph, alleles=alleles)
+
+    # Plot the graph
+    plot_path = os.path.join(output_directory, "dag_no_empty.png")
+    plot_graph(
+        graph=graph,
+        ref_id_offset=ref_id_offset,
+        ref_color=ref_color,
+        sample_color=sample_color,
+        output_path=plot_path)
+
+    # Enumerate paths
+    # enumerate_paths(alleles=alleles, graph=graph, output_directory=output_directory)
 
     output_fasta_path = os.path.join(output_directory, "reads.fasta")
 
@@ -507,16 +597,33 @@ def main():
             output_directory=output_directory,
             bam_path=path,
             region_string=region_string,
-            tokenator=tokenator
-        )
+            tokenator=tokenator)
 
+        # This repeatedly appends one FASTA file
         get_reads_from_bam(
             output_path=output_fasta_path,
             bam_path=region_bam_path,
-            token=tokenator
-        )
+            token=tokenator)
+
+        os.remove(region_bam_path)
+
+    output_gaf_path = run_minigraph(
+        output_directory=output_directory,
+        gfa_path=output_gfa_path,
+        fasta_path=output_fasta_path)
+
+    graph = update_edge_weights_using_alignments(gaf_path=output_gaf_path, graph=graph)
+
+    plot_path = os.path.join(output_directory, "aligned_dag.png")
+    plot_graph(
+        graph=graph,
+        ref_id_offset=ref_id_offset,
+        ref_color=ref_color,
+        sample_color=sample_color,
+        output_path=plot_path,
+        line_style=':',
+        draw_edge_weight_overlay=True)
 
 
 if __name__ == "__main__":
     main()
-
