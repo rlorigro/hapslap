@@ -80,14 +80,12 @@ def plot_graph(graph, ref_id_offset, ref_color, sample_color, output_path, line_
         node_size=node_size,
         style=line_style,
         font_size=4,
-        width=0.6,
+        width=0.2,
         arrowsize=3,
         with_labels=True)
 
     if draw_edge_weight_overlay:
         for edge in graph.edges(data='weight'):
-            print(edge)
-
             networkx.draw_networkx_edges(
                 graph,
                 pos,
@@ -97,14 +95,90 @@ def plot_graph(graph, ref_id_offset, ref_color, sample_color, output_path, line_
                 arrowstyle='-',
                 node_size=node_size,
                 alpha=0.6,
-                edge_color="#000000"
-            )
+                edge_color="#007cbe")
 
     ylim = list(a.get_ylim())
     ylim[0] -= 0.5
     a.set_ylim(ylim)
 
-    pyplot.savefig(output_path, dpi=300)
+    pyplot.savefig(output_path, dpi=400)
+
+
+def enumerate_paths_using_alignments(gaf_path, graph, alleles, ref_sample_name, output_directory):
+    start_node = None
+    stop_node = None
+
+    # For this implementation we enforce that reads must span the full graph, so start and end ref nodes are needed.
+    # TODO: A smarter implementation might allow partial walks to be extended using all walks from a sample.
+    # But it would need to be capable of aborting intractable traversals as a result of too many walks
+    for n in graph.nodes():
+        if ref_sample_name in alleles[n].samples:
+            if len(graph.in_edges(n)) == 0:
+                start_node = n
+            if len(graph.out_edges(n)) == 0:
+                stop_node = n
+
+    observed_paths = set()
+
+    with open(gaf_path, 'r') as file:
+        for l,line in enumerate(file):
+            tokens = line.strip().split('\t')
+
+            # Column 5 (0-based) is the path column in a GAF file
+            # It can be a forward or reverse alignment, so we will reinterpret them all as forward alignments
+            path = None
+            if tokens[5][0] == '>':
+                path = tuple(map(int,re.findall(r'\d+', tokens[5])))
+
+            if tokens[5][0] == '<':
+                path = tuple(map(int,reversed(re.findall(r'\d+', tokens[5]))))
+
+            for i in range(len(path) - 1):
+                if len(path) > 1 and path[0] == start_node and path[-1] == stop_node:
+                    observed_paths.add(path)
+
+    output_path = os.path.join(output_directory, "paths.fasta")
+    with open(output_path, 'w') as file:
+        for path in observed_paths:
+            name = "_".join(map(str,path))
+            file.write(">%s\n" % name)
+            for i in path:
+                file.write("%s" % alleles[i].sequence)
+            file.write("\n")
+
+    return output_path
+
+
+def update_edge_weights_using_alignments(gaf_path, graph, min_width=0.5, max_width=5.0):
+    max_weight = 0.0
+
+    with open(gaf_path, 'r') as file:
+        for l,line in enumerate(file):
+            tokens = line.strip().split('\t')
+
+            path = re.split(r'><', tokens[5][1:])
+
+            for i in range(len(path) - 1):
+                a = int(path[i])
+                b = int(path[i+1])
+
+                if graph.has_edge(a,b):
+                    graph[a][b]["weight"] += 1
+
+                    if graph[a][b]["weight"] > max_weight:
+                        max_weight = graph[a][b]["weight"]
+
+                if graph.has_edge(b,a):
+                    graph[b][a]["weight"] += 1
+                    if graph[b][a]["weight"] > max_weight:
+                        max_weight = graph[b][a]["weight"]
+
+    for edge in graph.edges:
+        w = graph[edge[0]][edge[1]]["weight"]
+        if w > 0:
+            graph[edge[0]][edge[1]]["weight"] = min_width + (w/max_weight)*(max_width - min_width)
+
+    return graph
 
 
 def get_region_from_bam(output_directory, bam_path, region_string, tokenator, timeout=60*20):
@@ -225,41 +299,6 @@ def enumerate_paths(alleles, graph, output_directory):
             file.write('\n')
 
 
-def update_edge_weights_using_alignments(gaf_path, graph, max_width=5.0):
-    max_weight = 0.0
-
-    with open(gaf_path, 'r') as file:
-        for l,line in enumerate(file):
-            tokens = line.strip().split('\t')
-
-            path = re.split('[><]', tokens[5][1:])
-
-            for i in range(len(path) - 1):
-                a = int(path[i])
-                b = int(path[i+1])
-
-                print(a,b)
-
-                if graph.has_edge(a,b):
-                    print(graph[a][b]["weight"])
-                    graph[a][b]["weight"] += 1
-                    print(graph[a][b]["weight"])
-
-                    if graph[a][b]["weight"] > max_weight:
-                        max_weight = graph[a][b]["weight"]
-
-                if graph.has_edge(b,a):
-                    graph[b][a]["weight"] += 1
-                    if graph[b][a]["weight"] > max_weight:
-                        max_weight = graph[b][a]["weight"]
-
-    for edge in graph.edges:
-        if graph[edge[0]][edge[1]]["weight"] > 0:
-            graph[edge[0]][edge[1]]["weight"] /= max_weight/max_width
-
-    return graph
-
-
 def vcf_to_graph(ref_path, vcf_paths, chromosome, ref_start, ref_stop, ref_sample_name, padding=20000):
     region_string = chromosome + ":" + str(ref_start) + "-" + str(ref_stop)
 
@@ -326,8 +365,6 @@ def vcf_to_graph(ref_path, vcf_paths, chromosome, ref_start, ref_stop, ref_sampl
     ref_edges = defaultdict(lambda: [[],[]])
 
     for a,allele in enumerate(alleles):
-        print(a)
-        print(allele)
         ref_edges[allele.start][1].append(a)
         ref_edges[allele.stop][0].append(a)
 
@@ -356,8 +393,6 @@ def vcf_to_graph(ref_path, vcf_paths, chromosome, ref_start, ref_stop, ref_sampl
     r = ref_id_offset
     for i,[coord,edges] in enumerate(ref_edges):
         id = r
-
-        print(id, coord, edges)
 
         sequence = ref_sequence[prev_coord:coord]
 
@@ -398,7 +433,16 @@ def vcf_to_graph(ref_path, vcf_paths, chromosome, ref_start, ref_stop, ref_sampl
 
 
 def main():
-    output_directory = "/home/ryan/data/test_hapslap/output2/"
+    chromosome = "chr20"
+    # ref_start = 47474020
+    # ref_stop = 47477018
+
+    ref_start = 54974920
+    ref_stop = 54977307
+
+    region_string = chromosome + ":" + str(ref_start) + "-" + str(ref_stop)
+
+    output_directory = os.path.join("/home/ryan/data/test_hapslap/", region_string.replace(':',"_"))
 
     if not os.path.exists(output_directory):
         os.makedirs(output_directory)
@@ -492,15 +536,6 @@ def main():
         print("vcf", data_per_sample[name]["vcf"])
         print("bam", data_per_sample[name]["bam"])
 
-    chromosome = "chr20"
-    ref_start = 47474020
-    ref_stop = 47477018
-
-    # ref_start = 54974920
-    # ref_stop = 54977307
-
-    region_string = chromosome + ":" + str(ref_start) + "-" + str(ref_stop)
-
     tokenator = GoogleToken()
 
     csv_path = os.path.join(output_directory, "nodes.csv")
@@ -527,7 +562,7 @@ def main():
     output_gfa_path = os.path.join(output_directory, "graph.gfa")
 
     sample_color = "#bebebe"
-    ref_color = "#007cbe"
+    ref_color = "#6e6e6e"
 
     # Write a csv that keeps track of ref coords, is_ref
     with open(csv_path, 'w') as csv_file:
@@ -614,7 +649,7 @@ def main():
 
     graph = update_edge_weights_using_alignments(gaf_path=output_gaf_path, graph=graph)
 
-    plot_path = os.path.join(output_directory, "aligned_dag.png")
+    plot_path = os.path.join(output_directory, "dag_aligned.png")
     plot_graph(
         graph=graph,
         ref_id_offset=ref_id_offset,
@@ -623,6 +658,13 @@ def main():
         output_path=plot_path,
         line_style=':',
         draw_edge_weight_overlay=True)
+
+    enumerate_paths_using_alignments(
+        gaf_path=output_gaf_path,
+        graph=graph,
+        alleles=alleles,
+        ref_sample_name=ref_sample_name,
+        output_directory=output_directory)
 
 
 if __name__ == "__main__":
