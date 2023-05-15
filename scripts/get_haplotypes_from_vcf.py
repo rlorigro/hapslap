@@ -1,4 +1,9 @@
+import sys
+
+from modules.IterativeHistogram import IterativeHistogram
+from modules.IncrementalIdMap import IncrementalIdMap
 from modules.Authenticator import *
+from modules.Paths import Paths
 from modules.GsUri import *
 
 from collections import defaultdict
@@ -9,11 +14,14 @@ import argparse
 import os.path
 import re
 
+from ortools.graph.python import min_cost_flow
 from matplotlib import pyplot
 from networkx import DiGraph
 from pysam import FastaFile
 from vcf import VCFReader
 import networkx
+import numpy
+import pysam
 
 
 class Allele:
@@ -48,7 +56,18 @@ def write_graph_to_gfa(output_path, graph, alleles):
             gfa_file.write("L\t%s\t+\t%s\t+\t0M\n" % (str(e[0]), str(e[1])))
 
 
-def plot_graph(graph, ref_id_offset, ref_color, sample_color, output_path, line_style='-', draw_edge_weight_overlay=False):
+def plot_graph(
+        graph,
+        ref_id_offset,
+        ref_color,
+        sample_color,
+        output_path,
+        line_style='-',
+        draw_edge_weight_overlay=False,
+        figure_width=None,
+        figure_height=None,
+        connection_style="arc3,rad=-0.35"):
+
     for layer, nodes in enumerate(networkx.topological_generations(graph)):
         # `multipartite_layout` expects the layer as a node attribute, so add the
         # numeric layer value as a node attribute
@@ -65,8 +84,20 @@ def plot_graph(graph, ref_id_offset, ref_color, sample_color, output_path, line_
     pos = networkx.multipartite_layout(graph, subset_key="layer")
 
     n_ref = graph.number_of_nodes() - ref_id_offset
-    width = 1 + (n_ref*0.7)
-    height = 1 + (n_ref*0.1)
+
+    width = None
+    height = None
+
+    if figure_width is None:
+        width = 1 + (n_ref*0.7)
+    else:
+        width = figure_width
+
+    if figure_height is None:
+        height = 1 + (n_ref*0.1)
+    else:
+        height = figure_height
+
     f = pyplot.figure(figsize=(width, height))
     a = pyplot.axes()
 
@@ -75,7 +106,7 @@ def plot_graph(graph, ref_id_offset, ref_color, sample_color, output_path, line_
     networkx.draw(
         graph,
         pos,
-        connectionstyle="arc3,rad=-0.35",
+        connectionstyle=connection_style,
         node_color=color_map,
         node_size=node_size,
         style=line_style,
@@ -91,7 +122,7 @@ def plot_graph(graph, ref_id_offset, ref_color, sample_color, output_path, line_
                 pos,
                 edgelist=[edge],
                 width=edge[2],
-                connectionstyle="arc3,rad=-0.35",
+                connectionstyle=connection_style,
                 arrowstyle='-',
                 node_size=node_size,
                 alpha=0.6,
@@ -104,7 +135,7 @@ def plot_graph(graph, ref_id_offset, ref_color, sample_color, output_path, line_
     pyplot.savefig(output_path, dpi=400)
 
 
-def enumerate_paths_using_alignments(gaf_path, graph, alleles, ref_sample_name, output_directory):
+def enumerate_paths_using_alignments(paths: Paths, graph: DiGraph, alleles, gaf_path, ref_sample_name, output_directory):
     start_node = None
     stop_node = None
 
@@ -117,8 +148,6 @@ def enumerate_paths_using_alignments(gaf_path, graph, alleles, ref_sample_name, 
                 start_node = n
             if len(graph.out_edges(n)) == 0:
                 stop_node = n
-
-    observed_paths = set()
 
     with open(gaf_path, 'r') as file:
         for l,line in enumerate(file):
@@ -133,42 +162,55 @@ def enumerate_paths_using_alignments(gaf_path, graph, alleles, ref_sample_name, 
             if tokens[5][0] == '<':
                 path = tuple(map(int,reversed(re.findall(r'\d+', tokens[5]))))
 
-            for i in range(len(path) - 1):
-                if len(path) > 1 and path[0] == start_node and path[-1] == stop_node:
-                    observed_paths.add(path)
+            if len(path) > 1 and path[0] == start_node and path[-1] == stop_node:
+                paths.increment_weight(path,1)
 
-    output_path = os.path.join(output_directory, "paths.fasta")
-    with open(output_path, 'w') as file:
-        for path in observed_paths:
+    # Write one sequence per FASTA so that all reads can be aligned to each independently
+    output_paths = list()
+    csv_path = os.path.join(output_directory, "paths.csv")
+    with open(csv_path, 'w') as csv_file:
+        csv_file.write("index,path,frequency\n")
+
+        for p,path,frequency in paths:
             name = "_".join(map(str,path))
-            file.write(">%s\n" % name)
-            for i in path:
-                file.write("%s" % alleles[i].sequence)
-            file.write("\n")
 
-    return output_path
+            csv_file.write("%d,%s,%d" % (p,name,frequency) + '\n')
+
+            output_path = os.path.join(output_directory, str(p) + ".fasta")
+            output_paths.append(output_path)
+
+            with open(output_path, 'w') as file:
+                file.write(">%s\n" % name)
+                for i in path:
+                    file.write("%s" % alleles[i].sequence)
+                file.write("\n")
+
+    return output_paths
 
 
-def update_edge_weights_using_alignments(gaf_path, graph, min_width=0.5, max_width=5.0):
+def update_edge_weights_using_alignments(gaf_path, graph: DiGraph, min_width=0.5, max_width=5.0):
     max_weight = 0.0
 
     with open(gaf_path, 'r') as file:
         for l,line in enumerate(file):
             tokens = line.strip().split('\t')
 
-            path = re.split(r'><', tokens[5][1:])
+            path = tuple(map(int,re.findall(r'\d+', tokens[5])))
+
+            print(path)
 
             for i in range(len(path) - 1):
                 a = int(path[i])
                 b = int(path[i+1])
 
                 if graph.has_edge(a,b):
+                    print(a,b)
                     graph[a][b]["weight"] += 1
-
                     if graph[a][b]["weight"] > max_weight:
                         max_weight = graph[a][b]["weight"]
 
                 if graph.has_edge(b,a):
+                    print(b,a)
                     graph[b][a]["weight"] += 1
                     if graph[b][a]["weight"] > max_weight:
                         max_weight = graph[b][a]["weight"]
@@ -177,8 +219,6 @@ def update_edge_weights_using_alignments(gaf_path, graph, min_width=0.5, max_wid
         w = graph[edge[0]][edge[1]]["weight"]
         if w > 0:
             graph[edge[0]][edge[1]]["weight"] = min_width + (w/max_weight)*(max_width - min_width)
-
-    return graph
 
 
 def get_region_from_bam(output_directory, bam_path, region_string, tokenator, timeout=60*20):
@@ -217,6 +257,44 @@ def get_region_from_bam(output_directory, bam_path, region_string, tokenator, ti
         return None
 
     return local_bam_path
+
+
+# Requires samtools installed!
+def run_minimap2(ref_fasta_path, reads_fasta_path, preset, n_threads, n_sort_threads, output_directory, filename_prefix="reads_vs_ref"):
+    output_filename = os.path.join(output_directory, filename_prefix + ".bam")
+    output_path = os.path.join(output_directory,output_filename)
+
+    minimap_args = ["minimap2", "-a", "-x", preset, "--eqx", "-t", str(n_threads), ref_fasta_path, reads_fasta_path]
+    sort_args = ["samtools", "sort", "-", "-@", str(n_sort_threads), "-o", output_filename]
+
+    index_args = ["samtools", "index", output_filename]
+
+    with open(output_path, 'w') as file:
+        sys.stderr.write(" ".join(minimap_args)+'\n')
+        sys.stderr.write(" ".join(sort_args)+'\n')
+
+        p1 = subprocess.Popen(minimap_args, stdout=subprocess.PIPE, cwd=output_directory)
+        p2 = subprocess.Popen(sort_args, stdin=p1.stdout, stdout=file, cwd=output_directory)
+        p2.communicate()
+
+    success = (p2.returncode == 0)
+
+    if not success:
+        sys.stderr.write("ERROR: failed to align: %s to %s\n" % (reads_fasta_path, ref_fasta_path))
+        sys.stderr.flush()
+        return None
+
+    sys.stderr.write(" ".join(index_args)+'\n')
+
+    try:
+        p1 = subprocess.run(index_args, check=True, stderr=subprocess.PIPE)
+
+    except subprocess.CalledProcessError as e:
+        sys.stderr.write("Status: FAIL " + '\n' + (e.stderr.decode("utf8") if e.stderr is not None else "") + '\n')
+        sys.stderr.flush()
+        return None
+
+    return output_path
 
 
 def get_reads_from_bam(output_path, bam_path, token):
@@ -433,12 +511,15 @@ def vcf_to_graph(ref_path, vcf_paths, chromosome, ref_start, ref_stop, ref_sampl
 
 
 def main():
-    chromosome = "chr20"
-    # ref_start = 47474020
-    # ref_stop = 47477018
+    n_threads = 30
+    n_sort_threads = 4
 
-    ref_start = 54974920
-    ref_stop = 54977307
+    chromosome = "chr20"
+    ref_start = 47474020
+    ref_stop = 47477018
+
+    # ref_start = 54974920
+    # ref_stop = 54977307
 
     region_string = chromosome + ":" + str(ref_start) + "-" + str(ref_stop)
 
@@ -454,53 +535,53 @@ def main():
     input_directory = "/home/ryan/code/hapslap/data/test/hprc/"
 
     sample_names = [
-        "HG002",
+        # "HG002",
         "HG00438",
-        "HG005",
+        # "HG005",
         "HG00621",
-        "HG00673",
-        "HG00733",
-        "HG00735",
-        "HG00741",
-        "HG01071",
-        "HG01106",
-        "HG01109",
-        "HG01123",
-        "HG01175",
-        "HG01243",
-        "HG01258",
-        "HG01358",
-        "HG01361",
-        "HG01891",
-        "HG01928",
-        "HG01952",
-        "HG01978",
-        "HG02055",
-        "HG02080",
-        "HG02109",
-        "HG02145",
-        "HG02148",
-        "HG02257",
-        "HG02486",
-        "HG02559",
-        "HG02572",
-        "HG02622",
-        "HG02630",
-        "HG02717",
-        "HG02723",
-        "HG02818",
-        "HG02886",
-        "HG03098",
-        "HG03453",
-        "HG03486",
-        "HG03492",
-        "HG03516",
-        "HG03540",
-        "HG03579",
-        "NA18906",
-        "NA19240",
-        "NA20129",
-        "NA21309"
+        # "HG00673",
+        # "HG00733",
+        # "HG00735",
+        # "HG00741",
+        # "HG01071",
+        # "HG01106",
+        # "HG01109",
+        # "HG01123",
+        # "HG01175",
+        # "HG01243",
+        # "HG01258",
+        # "HG01358",
+        # "HG01361",
+        # "HG01891",
+        # "HG01928",
+        # "HG01952",
+        # "HG01978",
+        # "HG02055",
+        # "HG02080",
+        # "HG02109",
+        # "HG02145",
+        # "HG02148",
+        # "HG02257",
+        # "HG02486",
+        # "HG02559",
+        # "HG02572",
+        # "HG02622",
+        # "HG02630",
+        # "HG02717",
+        # "HG02723",
+        # "HG02818",
+        # "HG02886",
+        # "HG03098",
+        # "HG03453",
+        # "HG03486",
+        # "HG03492",
+        # "HG03516",
+        # "HG03540",
+        # "HG03579",
+        # "NA18906",
+        # "NA19240",
+        # "NA20129",
+        # "NA21309"
     ]
 
     data_per_sample = defaultdict(dict)
@@ -647,7 +728,7 @@ def main():
         gfa_path=output_gfa_path,
         fasta_path=output_fasta_path)
 
-    graph = update_edge_weights_using_alignments(gaf_path=output_gaf_path, graph=graph)
+    update_edge_weights_using_alignments(gaf_path=output_gaf_path, graph=graph)
 
     plot_path = os.path.join(output_directory, "dag_aligned.png")
     plot_graph(
@@ -659,12 +740,161 @@ def main():
         line_style=':',
         draw_edge_weight_overlay=True)
 
-    enumerate_paths_using_alignments(
-        gaf_path=output_gaf_path,
+    path_subdirectory = os.path.join(output_directory, "paths")
+    os.makedirs(path_subdirectory)
+
+    paths = Paths()
+
+    fasta_paths = enumerate_paths_using_alignments(
+        paths=paths,
         graph=graph,
         alleles=alleles,
+        gaf_path=output_gaf_path,
         ref_sample_name=ref_sample_name,
-        output_directory=output_directory)
+        output_directory=path_subdirectory)
+
+    bam_paths = list()
+    for p,path in enumerate(fasta_paths):
+        bam_path = run_minimap2(
+            ref_fasta_path=path,
+            reads_fasta_path=output_fasta_path,
+            preset="map-hifi",
+            n_threads=n_threads,
+            n_sort_threads=n_sort_threads,
+            output_directory=path_subdirectory,
+            filename_prefix=str(p))
+
+        bam_paths.append(bam_path)
+
+    pyplot.close("all")
+
+    fig = pyplot.figure()
+    axes = pyplot.axes()
+
+    histogram = IterativeHistogram(start=0, stop=1000, n_bins=200)
+
+    path_to_read_costs = [defaultdict(int) for x in range(len(paths))]
+    read_id_map = IncrementalIdMap(offset=len(paths))
+
+    # Because of the potential for supplementary alignments, need to first aggregate costs per read
+    for bam_path in bam_paths:
+        bam = pysam.AlignmentFile(bam_path, 'rb')
+
+        print(bam_path)
+
+        total = 0.0
+        n = 0.0
+        for alignment in bam:
+            edit_distance = alignment.get_tag("NM")
+            path_name = bam.header.get_reference_name(alignment.reference_id)
+            path_id = paths.get_path_id(path_name)
+            read_name = alignment.query_name
+            read_id = read_id_map.add(read_name)
+
+            if not alignment.is_secondary:
+                path_to_read_costs[path_id][read_id] += edit_distance
+                print(path_id, read_id)
+
+                total += edit_distance
+                n += 1
+
+        avg_edit_distance = total/n
+        histogram.update(avg_edit_distance)
+
+    axes.plot(histogram.get_bin_centers(), histogram.get_histogram(), color="#007cbe")
+
+    reads_csv_path = os.path.join(output_directory, "reads.csv")
+    read_id_map.write_to_file(reads_csv_path)
+
+    solver = min_cost_flow.SimpleMinCostFlow()
+    all_arcs = list()
+
+    source_id = len(read_id_map) + len(paths)
+    sink_id = source_id + 1
+
+    #
+    #           [r0]---[h2]
+    #          /    \ /    \
+    #  [SOURCE]      x      [SINK]
+    #          \    / \    /
+    #           [r1]---[h1]
+    #
+
+    flow_graph = DiGraph()
+    flow_graph.add_node(source_id)
+    flow_graph.add_node(sink_id)
+
+    # source --> read
+    print("read_id_map")
+    for id,name in read_id_map:
+        print(id,name)
+        a = solver.add_arc_with_capacity_and_unit_cost(tail=source_id,head=id,unit_cost=0,capacity=1)
+        all_arcs.append(a)
+        solver.set_node_supply(node=id,supply=0)
+
+        flow_graph.add_edge(source_id,id,weight=0)
+        flow_graph.add_node(id)
+
+    # path --> sink
+    print("paths")
+    for id,name,_ in paths:
+        print(id,name)
+
+        a = solver.add_arc_with_capacity_and_unit_cost(tail=id,head=sink_id,unit_cost=0,capacity=len(read_id_map))
+        all_arcs.append(a)
+        solver.set_node_supply(node=id,supply=0)
+
+        flow_graph.add_node(id)
+        flow_graph.add_edge(id,sink_id,weight=0)
+
+    # read --> path (haplotype)
+    print("path_to_read_costs")
+    for path_id, read_costs in enumerate(path_to_read_costs):
+        print(path_id, len(path_to_read_costs))
+        for read_id,cost in read_costs.items():
+            print(path_id, read_id, cost)
+
+            a = solver.add_arc_with_capacity_and_unit_cost(tail=read_id,head=path_id,unit_cost=cost,capacity=1)
+            all_arcs.append(a)
+
+            flow_graph.add_edge(read_id,path_id,weight=cost)
+
+    solver.set_node_supply(node=source_id,supply=len(read_id_map))
+    solver.set_node_supply(node=sink_id,supply=-len(read_id_map))
+
+    status = solver.solve_max_flow_with_min_cost()
+
+    if status != solver.OPTIMAL:
+        print('There was an issue with the min cost flow input.')
+        print(f'Status: {status}')
+        exit(1)
+
+    print("Minimum cost: %d" % solver.optimal_cost())
+    flows = solver.flows(all_arcs)
+    print(flows)
+    for arc in all_arcs:
+        a = solver.tail(arc)
+        b = solver.head(arc)
+        flow = solver.flow(arc)
+        print(a, b, flow)
+        flow_graph[a][b]["weight"] = flow
+
+    plot_path = os.path.join(output_directory, "flow_graph.png")
+    plot_graph(
+        graph=flow_graph,
+        ref_id_offset=-1,
+        ref_color=ref_color,
+        sample_color=sample_color,
+        output_path=plot_path,
+        line_style=':',
+        figure_width=4,
+        figure_height=4,
+        connection_style="arc3",
+        draw_edge_weight_overlay=True,
+    )
+
+    pyplot.show()
+    pyplot.close()
 
 
 if __name__ == "__main__":
