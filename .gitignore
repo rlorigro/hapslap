@@ -10,3 +10,5 @@ compile_commands.json
 CTestTestfile.cmake
 _deps
 .idea
+__pycache__
+data/test/hprc
