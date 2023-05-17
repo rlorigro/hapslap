@@ -535,53 +535,53 @@ def main():
     input_directory = "/home/ryan/code/hapslap/data/test/hprc/"
 
     sample_names = [
-        # "HG002",
+        "HG002",
         "HG00438",
-        # "HG005",
+        "HG005",
         "HG00621",
-        # "HG00673",
-        # "HG00733",
-        # "HG00735",
-        # "HG00741",
-        # "HG01071",
-        # "HG01106",
-        # "HG01109",
-        # "HG01123",
-        # "HG01175",
-        # "HG01243",
-        # "HG01258",
-        # "HG01358",
-        # "HG01361",
-        # "HG01891",
-        # "HG01928",
-        # "HG01952",
-        # "HG01978",
-        # "HG02055",
-        # "HG02080",
-        # "HG02109",
-        # "HG02145",
-        # "HG02148",
-        # "HG02257",
-        # "HG02486",
-        # "HG02559",
-        # "HG02572",
-        # "HG02622",
-        # "HG02630",
-        # "HG02717",
-        # "HG02723",
-        # "HG02818",
-        # "HG02886",
-        # "HG03098",
-        # "HG03453",
-        # "HG03486",
-        # "HG03492",
-        # "HG03516",
-        # "HG03540",
-        # "HG03579",
-        # "NA18906",
-        # "NA19240",
-        # "NA20129",
-        # "NA21309"
+        "HG00673",
+        "HG00733",
+        "HG00735",
+        "HG00741",
+        "HG01071",
+        "HG01106",
+        "HG01109",
+        "HG01123",
+        "HG01175",
+        "HG01243",
+        "HG01258",
+        "HG01358",
+        "HG01361",
+        "HG01891",
+        "HG01928",
+        "HG01952",
+        "HG01978",
+        "HG02055",
+        "HG02080",
+        "HG02109",
+        "HG02145",
+        "HG02148",
+        "HG02257",
+        "HG02486",
+        "HG02559",
+        "HG02572",
+        "HG02622",
+        "HG02630",
+        "HG02717",
+        "HG02723",
+        "HG02818",
+        "HG02886",
+        "HG03098",
+        "HG03453",
+        "HG03486",
+        "HG03492",
+        "HG03516",
+        "HG03540",
+        "HG03579",
+        "NA18906",
+        "NA19240",
+        "NA20129",
+        "NA21309"
     ]
 
     data_per_sample = defaultdict(dict)
@@ -807,7 +807,9 @@ def main():
     read_id_map.write_to_file(reads_csv_path)
 
     solver = min_cost_flow.SimpleMinCostFlow()
-    all_arcs = list()
+    source_to_read_arcs = list()
+    read_to_path_arcs = list()
+    path_to_sink_arcs = list()
 
     source_id = len(read_id_map) + len(paths)
     sink_id = source_id + 1
@@ -825,37 +827,28 @@ def main():
     flow_graph.add_node(sink_id)
 
     # source --> read
-    print("read_id_map")
     for id,name in read_id_map:
-        print(id,name)
         a = solver.add_arc_with_capacity_and_unit_cost(tail=source_id,head=id,unit_cost=0,capacity=1)
-        all_arcs.append(a)
+        source_to_read_arcs.append(a)
         solver.set_node_supply(node=id,supply=0)
 
         flow_graph.add_edge(source_id,id,weight=0)
         flow_graph.add_node(id)
 
     # path --> sink
-    print("paths")
     for id,name,_ in paths:
-        print(id,name)
-
         a = solver.add_arc_with_capacity_and_unit_cost(tail=id,head=sink_id,unit_cost=0,capacity=len(read_id_map))
-        all_arcs.append(a)
+        path_to_sink_arcs.append(a)
         solver.set_node_supply(node=id,supply=0)
 
         flow_graph.add_node(id)
         flow_graph.add_edge(id,sink_id,weight=0)
 
     # read --> path (haplotype)
-    print("path_to_read_costs")
     for path_id, read_costs in enumerate(path_to_read_costs):
-        print(path_id, len(path_to_read_costs))
         for read_id,cost in read_costs.items():
-            print(path_id, read_id, cost)
-
             a = solver.add_arc_with_capacity_and_unit_cost(tail=read_id,head=path_id,unit_cost=cost,capacity=1)
-            all_arcs.append(a)
+            read_to_path_arcs.append(a)
 
             flow_graph.add_edge(read_id,path_id,weight=cost)
 
@@ -870,9 +863,27 @@ def main():
         exit(1)
 
     print("Minimum cost: %d" % solver.optimal_cost())
-    flows = solver.flows(all_arcs)
-    print(flows)
-    for arc in all_arcs:
+    print("source_to_read_arcs:")
+    flows = solver.flows(source_to_read_arcs)
+    for arc in source_to_read_arcs:
+        a = solver.tail(arc)
+        b = solver.head(arc)
+        flow = solver.flow(arc)
+        print(a, b, flow)
+        flow_graph[a][b]["weight"] = flow
+
+    print("read_to_path_arcs:")
+    flows = solver.flows(read_to_path_arcs)
+    for arc in read_to_path_arcs:
+        a = solver.tail(arc)
+        b = solver.head(arc)
+        flow = solver.flow(arc)
+        print(a, b, flow)
+        flow_graph[a][b]["weight"] = flow
+
+    print("path_to_sink_arcs:")
+    flows = solver.flows(path_to_sink_arcs)
+    for arc in path_to_sink_arcs:
         a = solver.tail(arc)
         b = solver.head(arc)
         flow = solver.flow(arc)
