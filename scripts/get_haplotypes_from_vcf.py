@@ -135,6 +135,111 @@ def plot_graph(
     pyplot.savefig(output_path, dpi=400)
 
 
+def optimize_with_flow(
+        paths,
+        read_id_map,
+        path_to_read_costs,
+        output_directory):
+
+    solver = min_cost_flow.SimpleMinCostFlow()
+    source_to_read_arcs = list()
+    read_to_path_arcs = list()
+    path_to_sink_arcs = list()
+
+    source_id = len(read_id_map) + len(paths)
+    sink_id = source_id + 1
+
+    #
+    #           [r0]---[h2]
+    #          /    \ /    \
+    #  [SOURCE]      x      [SINK]
+    #          \    / \    /
+    #           [r1]---[h1]
+    #
+
+    flow_graph = DiGraph()
+    flow_graph.add_node(source_id)
+    flow_graph.add_node(sink_id)
+
+    # source --> read
+    for id,name in read_id_map:
+        a = solver.add_arc_with_capacity_and_unit_cost(tail=source_id,head=id,unit_cost=0,capacity=1)
+        source_to_read_arcs.append(a)
+        solver.set_node_supply(node=id,supply=0)
+
+        flow_graph.add_edge(source_id,id,weight=0)
+        flow_graph.add_node(id)
+
+    # path --> sink
+    for id,name,_ in paths:
+        a = solver.add_arc_with_capacity_and_unit_cost(tail=id,head=sink_id,unit_cost=0,capacity=len(read_id_map))
+        path_to_sink_arcs.append(a)
+        solver.set_node_supply(node=id,supply=0)
+
+        flow_graph.add_node(id)
+        flow_graph.add_edge(id,sink_id,weight=0)
+
+    # read --> path (haplotype)
+    for path_id, read_costs in enumerate(path_to_read_costs):
+        for read_id,cost in read_costs.items():
+            a = solver.add_arc_with_capacity_and_unit_cost(tail=read_id,head=path_id,unit_cost=cost,capacity=1)
+            read_to_path_arcs.append(a)
+
+            flow_graph.add_edge(read_id,path_id,weight=cost)
+
+    solver.set_node_supply(node=source_id,supply=len(read_id_map))
+    solver.set_node_supply(node=sink_id,supply=-len(read_id_map))
+
+    status = solver.solve_max_flow_with_min_cost()
+
+    if status != solver.OPTIMAL:
+        print('There was an issue with the min cost flow input.')
+        print(f'Status: {status}')
+        exit(1)
+
+    print("Minimum cost: %d" % solver.optimal_cost())
+    print("source_to_read_arcs:")
+    for arc in source_to_read_arcs:
+        a = solver.tail(arc)
+        b = solver.head(arc)
+        flow = solver.flow(arc)
+        print(a, b, flow)
+        flow_graph[a][b]["weight"] = flow
+
+    print("read_to_path_arcs:")
+    for arc in read_to_path_arcs:
+        a = solver.tail(arc)
+        b = solver.head(arc)
+        flow = solver.flow(arc)
+        print(a, b, flow)
+        flow_graph[a][b]["weight"] = flow
+
+    print("path_to_sink_arcs:")
+    for arc in path_to_sink_arcs:
+        a = solver.tail(arc)
+        b = solver.head(arc)
+        flow = solver.flow(arc)
+        print(a, b, flow)
+        flow_graph[a][b]["weight"] = flow
+
+    sample_color = "#bebebe"
+    ref_color = "#6e6e6e"
+
+    plot_path = os.path.join(output_directory, "flow_graph.png")
+    plot_graph(
+        graph=flow_graph,
+        ref_id_offset=-1,
+        ref_color=ref_color,
+        sample_color=sample_color,
+        output_path=plot_path,
+        line_style=':',
+        figure_width=4,
+        figure_height=4,
+        connection_style="arc3",
+        draw_edge_weight_overlay=True,
+    )
+
+
 def enumerate_paths_using_alignments(paths: Paths, graph: DiGraph, alleles, gaf_path, ref_sample_name, output_directory):
     start_node = None
     stop_node = None
@@ -785,6 +890,7 @@ def main():
         total = 0.0
         n = 0.0
         for alignment in bam:
+            # TODO: verify that the NM tag is not double-counting softclips/hardclips in a supplementary alignment?
             edit_distance = alignment.get_tag("NM")
             path_name = bam.header.get_reference_name(alignment.reference_id)
             path_id = paths.get_path_id(path_name)
@@ -806,103 +912,26 @@ def main():
     reads_csv_path = os.path.join(output_directory, "reads.csv")
     read_id_map.write_to_file(reads_csv_path)
 
-    solver = min_cost_flow.SimpleMinCostFlow()
-    source_to_read_arcs = list()
-    read_to_path_arcs = list()
-    path_to_sink_arcs = list()
+    # c: cost (edit distance)
+    # r: read
+    # s: sample
+    # h: haplotype
 
-    source_id = len(read_id_map) + len(paths)
-    sink_id = source_id + 1
-
+    # cost = sum(c_r_h)
     #
-    #           [r0]---[h2]
-    #          /    \ /    \
-    #  [SOURCE]      x      [SINK]
-    #          \    / \    /
-    #           [r1]---[h1]
+    # boolean constraint: variables are boolean, and indicate read assignment to haplotypes
+    # for all r,h: 0 <= r_h <= 1
+    #
+    # completeness constraint: all reads must be assigned to exactly one haplotype
+    # for all r: sum(r_h,h) = 1
+    #
+    # ploidy_constraint: each sample must be aligned to at most 2 haps
+    # Must first group reads r by samples s, then for each sample group:
+    # is_active_h = sum(r_h,r) > 0
+    # x = sum(r_h,r)
+    #
     #
 
-    flow_graph = DiGraph()
-    flow_graph.add_node(source_id)
-    flow_graph.add_node(sink_id)
-
-    # source --> read
-    for id,name in read_id_map:
-        a = solver.add_arc_with_capacity_and_unit_cost(tail=source_id,head=id,unit_cost=0,capacity=1)
-        source_to_read_arcs.append(a)
-        solver.set_node_supply(node=id,supply=0)
-
-        flow_graph.add_edge(source_id,id,weight=0)
-        flow_graph.add_node(id)
-
-    # path --> sink
-    for id,name,_ in paths:
-        a = solver.add_arc_with_capacity_and_unit_cost(tail=id,head=sink_id,unit_cost=0,capacity=len(read_id_map))
-        path_to_sink_arcs.append(a)
-        solver.set_node_supply(node=id,supply=0)
-
-        flow_graph.add_node(id)
-        flow_graph.add_edge(id,sink_id,weight=0)
-
-    # read --> path (haplotype)
-    for path_id, read_costs in enumerate(path_to_read_costs):
-        for read_id,cost in read_costs.items():
-            a = solver.add_arc_with_capacity_and_unit_cost(tail=read_id,head=path_id,unit_cost=cost,capacity=1)
-            read_to_path_arcs.append(a)
-
-            flow_graph.add_edge(read_id,path_id,weight=cost)
-
-    solver.set_node_supply(node=source_id,supply=len(read_id_map))
-    solver.set_node_supply(node=sink_id,supply=-len(read_id_map))
-
-    status = solver.solve_max_flow_with_min_cost()
-
-    if status != solver.OPTIMAL:
-        print('There was an issue with the min cost flow input.')
-        print(f'Status: {status}')
-        exit(1)
-
-    print("Minimum cost: %d" % solver.optimal_cost())
-    print("source_to_read_arcs:")
-    flows = solver.flows(source_to_read_arcs)
-    for arc in source_to_read_arcs:
-        a = solver.tail(arc)
-        b = solver.head(arc)
-        flow = solver.flow(arc)
-        print(a, b, flow)
-        flow_graph[a][b]["weight"] = flow
-
-    print("read_to_path_arcs:")
-    flows = solver.flows(read_to_path_arcs)
-    for arc in read_to_path_arcs:
-        a = solver.tail(arc)
-        b = solver.head(arc)
-        flow = solver.flow(arc)
-        print(a, b, flow)
-        flow_graph[a][b]["weight"] = flow
-
-    print("path_to_sink_arcs:")
-    flows = solver.flows(path_to_sink_arcs)
-    for arc in path_to_sink_arcs:
-        a = solver.tail(arc)
-        b = solver.head(arc)
-        flow = solver.flow(arc)
-        print(a, b, flow)
-        flow_graph[a][b]["weight"] = flow
-
-    plot_path = os.path.join(output_directory, "flow_graph.png")
-    plot_graph(
-        graph=flow_graph,
-        ref_id_offset=-1,
-        ref_color=ref_color,
-        sample_color=sample_color,
-        output_path=plot_path,
-        line_style=':',
-        figure_width=4,
-        figure_height=4,
-        connection_style="arc3",
-        draw_edge_weight_overlay=True,
-    )
 
     pyplot.show()
     pyplot.close()
