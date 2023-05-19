@@ -1,7 +1,108 @@
 from ortools.sat.python import cp_model
+from collections import defaultdict
+import sys
 
 
-def main():
+def test2():
+    samples = [1,2]
+    reads = [1,2,3,4,5,6]
+    paths = [1,2,3]
+    path_to_read_costs = dict()
+    path_to_read_vars = dict()
+    path_to_sample_vars = dict()
+    sample_to_read = {
+        1:[1,2,3],
+        2:[4,5,6]
+    }
+
+    # Sample A
+    path_to_read_costs[(1,1)] = 3
+    path_to_read_costs[(1,2)] = 2
+    path_to_read_costs[(1,3)] = 1
+
+    path_to_read_costs[(2,1)] = 1
+    path_to_read_costs[(2,2)] = 3
+    path_to_read_costs[(2,3)] = 2
+
+    path_to_read_costs[(3,1)] = 1
+    path_to_read_costs[(3,2)] = 2
+    path_to_read_costs[(3,3)] = 3
+
+    # Sample B
+    path_to_read_costs[(3,4)] = 3
+    path_to_read_costs[(1,4)] = 2
+    path_to_read_costs[(2,4)] = 1
+
+    path_to_read_costs[(3,5)] = 1
+    path_to_read_costs[(1,5)] = 3
+    path_to_read_costs[(2,5)] = 2
+
+    path_to_read_costs[(3,6)] = 1
+    path_to_read_costs[(1,6)] = 2
+    path_to_read_costs[(2,6)] = 3
+
+    model = cp_model.CpModel()
+
+    # Define read assignment variables
+    for edge in path_to_read_costs.keys():
+        # 'edge' is a tuple with path_id,read_id
+        path_to_read_vars[edge] = model.NewIntVar(0, 1, "p%dr%d" % edge)
+        print("making variable: p%dr%d" % edge)
+
+    # Constraint: each read must map to only one haplotype/path
+    for read_id in reads:
+        model.Add(sum([path_to_read_vars[(path_id,read_id)] for path_id in paths]) == 1)
+
+    # Constraint: each sample's reads must map to at most two haplotypes/paths
+    # Use a boolean indicator to tell whether any of a sample's reads are assigned to each haplotype/path
+    for sample_id,read_group in sample_to_read.items():
+        for path_id in paths:
+            edge = (path_id,sample_id)
+            path_to_sample_vars[edge] = model.NewBoolVar("p%ds%d" % edge)
+
+            s = sum([path_to_read_vars[(path_id,read_id)] for read_id in read_group])
+            model.Add(s >= 1).OnlyEnforceIf(path_to_sample_vars[edge])
+            model.Add(s == 0).OnlyEnforceIf(path_to_sample_vars[edge].Not())
+
+    # Now that the boolean indicators have been defined, use them to add a constraint on ploidy per sample
+    for sample_id,read_group in sample_to_read.items():
+        model.Add(sum([path_to_sample_vars[(path_id,sample_id)] for path_id in paths]) <= 2)
+
+    # Cost function
+    model.Minimize(sum([c*path_to_read_vars[e] for e,c in path_to_read_costs.items()]))
+
+    solver = cp_model.CpSolver()
+    status = solver.Solve(model)
+
+    assert status == cp_model.OPTIMAL
+
+    print()
+    print("=====Stats:======")
+    print(solver.SolutionInfo())
+    print(solver.ResponseStats())
+
+    for sample_id,read_group in sample_to_read.items():
+        print("SAMPLE %d" % sample_id)
+
+        for read_id in read_group:
+            sys.stdout.write("\tr%d" % read_id)
+        sys.stdout.write("\tis_path_used\n")
+
+        for path_id in paths:
+            sys.stdout.write("p%d\t" % path_id)
+
+            for read_id in read_group:
+                v = solver.Value(path_to_read_vars[(path_id,read_id)])
+                c = path_to_read_costs[(path_id,read_id)]
+                sys.stdout.write("%d %d\t" % (v,c))
+
+            sys.stdout.write("%d" % solver.Value(path_to_sample_vars[(path_id,sample_id)]))
+            sys.stdout.write("\n")
+
+    return
+
+
+def test():
     model = cp_model.CpModel()
 
     # Variables
@@ -78,15 +179,12 @@ def main():
     # A case constructed so that every read has a different preferred haplotype.
     # The constraints on ploidy will need to prevent reads from being distributed evenly.
     model.Minimize(
-        # r1
         3*r11a + 3*r11b +
         2*r12a + 2*r12b +
         1*r13a + 1*r13b +
-        # r2
         1*r21a + 1*r21b +
         3*r22a + 3*r22b +
         2*r23a + 2*r23b +
-        # r3
         1*r31a + 1*r31b +
         2*r32a + 2*r32b +
         3*r33a + 3*r33b
@@ -118,4 +216,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    test()
+    test2()
