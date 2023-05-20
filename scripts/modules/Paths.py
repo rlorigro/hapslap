@@ -72,6 +72,10 @@ class Paths:
     def get_path_name(path: tuple[int]) -> str:
         return '_'.join(list(map(str,path)))
 
+    def ids(self):
+        for p in range(self.n):
+            yield p
+
     def __iter__(self):
         for p in range(self.n):
             yield p, self.id_to_path[p], self.id_to_weight[p]

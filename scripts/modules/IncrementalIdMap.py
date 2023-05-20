@@ -50,6 +50,10 @@ class IncrementalIdMap:
     def get_max_id(self):
         return self.n - 1
 
+    def ids(self):
+        for id in range(self.offset,self.n):
+            yield id
+
     def __len__(self):
         return self.get_count()
 

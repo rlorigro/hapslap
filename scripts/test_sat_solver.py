@@ -81,6 +81,25 @@ def test2():
     print(solver.SolutionInfo())
     print(solver.ResponseStats())
 
+    print("---- COSTS ----")
+    for sample_id,read_group in sample_to_read.items():
+        print("SAMPLE %d" % sample_id)
+
+        for read_id in read_group:
+            sys.stdout.write("\tr%d" % read_id)
+        sys.stdout.write("\n")
+
+        for path_id in paths:
+            sys.stdout.write("p%d\t" % path_id)
+
+            for read_id in read_group:
+                c = path_to_read_costs[(path_id,read_id)]
+                sys.stdout.write("%d\t" % c)
+
+            sys.stdout.write("\n")
+
+    print()
+    print("---- RESULTS ----")
     for sample_id,read_group in sample_to_read.items():
         print("SAMPLE %d" % sample_id)
 
@@ -94,7 +113,7 @@ def test2():
             for read_id in read_group:
                 v = solver.Value(path_to_read_vars[(path_id,read_id)])
                 c = path_to_read_costs[(path_id,read_id)]
-                sys.stdout.write("%d %d\t" % (v,c))
+                sys.stdout.write("%d\t" % v)
 
             sys.stdout.write("%d" % solver.Value(path_to_sample_vars[(path_id,sample_id)]))
             sys.stdout.write("\n")
@@ -173,7 +192,7 @@ def test():
     model.Add(r13b + r23b + r33b >= 1).OnlyEnforceIf(b3)
     model.Add(r13b + r23b + r33b == 0).OnlyEnforceIf(b3.Not())
 
-    model.Add(b1 + b2 + b3 <= 2)
+    # model.Add(b1 + b2 + b3 <= 2)
 
     # Objective
     # A case constructed so that every read has a different preferred haplotype.
@@ -182,9 +201,11 @@ def test():
         3*r11a + 3*r11b +
         2*r12a + 2*r12b +
         1*r13a + 1*r13b +
+        #
         1*r21a + 1*r21b +
         3*r22a + 3*r22b +
         2*r23a + 2*r23b +
+        #
         1*r31a + 1*r31b +
         2*r32a + 2*r32b +
         3*r33a + 3*r33b
@@ -217,4 +238,4 @@ def test():
 
 if __name__ == "__main__":
     test()
-    test2()
+    # test2()

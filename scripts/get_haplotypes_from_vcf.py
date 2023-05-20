@@ -15,6 +15,7 @@ import os.path
 import re
 
 from ortools.graph.python import min_cost_flow
+from ortools.sat.python import cp_model
 from matplotlib import pyplot
 from networkx import DiGraph
 from pysam import FastaFile
@@ -240,6 +241,96 @@ def optimize_with_flow(
     )
 
 
+def optimize_with_cpsat(path_to_read_costs, reads: IncrementalIdMap, paths: Paths, sample_to_reads: dict):
+    path_to_read_vars = dict()
+    path_to_sample_vars = dict()
+
+    model = cp_model.CpModel()
+
+    # Define read assignment variables
+    for edge in path_to_read_costs.keys():
+        # 'edge' is a tuple with path_id,read_id
+        path_to_read_vars[edge] = model.NewIntVar(0, 1, "p%dr%d" % edge)
+
+    # Constraint: each read must map to only one haplotype/path
+    for read_id in reads.ids():
+        model.Add(sum([path_to_read_vars[(path_id,read_id)] for path_id in paths.ids()]) == 1)
+
+    # Constraint: each sample's reads must map to at most two haplotypes/paths
+    # Use a boolean indicator to tell whether any of a sample's reads are assigned to each haplotype/path
+    for sample_id,read_group in sample_to_reads.items():
+        if not type(sample_id) == int:
+            raise Exception("ERROR: non integer ids used for sample: %s" % str(sample_id))
+
+        for id in read_group:
+            if not type(id) == int:
+                raise Exception("ERROR: non integer ids used for sample: %s" % str(id))
+
+        for path_id in paths.ids():
+            edge = (path_id,sample_id)
+            path_to_sample_vars[edge] = model.NewBoolVar("p%ds%d" % edge)
+
+            s = sum([path_to_read_vars[(path_id,read_id)] for read_id in read_group])
+            model.Add(s >= 1).OnlyEnforceIf(path_to_sample_vars[edge])
+            model.Add(s == 0).OnlyEnforceIf(path_to_sample_vars[edge].Not())
+
+    # Now that the boolean indicators have been defined, use them to add a constraint on ploidy per sample
+    for sample_id,read_group in sample_to_reads.items():
+        model.Add(sum([path_to_sample_vars[(path_id,sample_id)] for path_id in paths.ids()]) <= 2)
+
+    # Cost function
+    model.Minimize(sum([c*path_to_read_vars[e] for e,c in path_to_read_costs.items()]))
+
+    solver = cp_model.CpSolver()
+    status = solver.Solve(model)
+
+    assert status == cp_model.OPTIMAL
+
+    print()
+    print("=====Stats:======")
+    print(solver.SolutionInfo())
+    print(solver.ResponseStats())
+
+    print("---- COSTS ----")
+    for sample_id,read_group in sample_to_reads.items():
+        print("SAMPLE %d" % sample_id)
+
+        for read_id in read_group:
+            sys.stdout.write("\tr%d" % read_id)
+        sys.stdout.write("\n")
+
+        for path_id in paths.ids():
+            sys.stdout.write("p%d\t" % path_id)
+
+            for read_id in read_group:
+                c = path_to_read_costs[(path_id,read_id)]
+                sys.stdout.write("%d\t" % c)
+
+            sys.stdout.write("\n")
+
+    print()
+    print("---- RESULTS ----")
+    for sample_id,read_group in sample_to_reads.items():
+        print("SAMPLE %d" % sample_id)
+
+        for read_id in read_group:
+            sys.stdout.write("\tr%d" % read_id)
+        sys.stdout.write("\tis_path_used\n")
+
+        for path_id in paths.ids():
+            sys.stdout.write("p%d\t" % path_id)
+
+            for read_id in read_group:
+                v = solver.Value(path_to_read_vars[(path_id,read_id)])
+                c = path_to_read_costs[(path_id,read_id)]
+                sys.stdout.write("%d\t" % v)
+
+            sys.stdout.write("%d" % solver.Value(path_to_sample_vars[(path_id,sample_id)]))
+            sys.stdout.write("\n")
+
+    return
+
+
 def enumerate_paths_using_alignments(paths: Paths, graph: DiGraph, alleles, gaf_path, ref_sample_name, output_directory):
     start_node = None
     stop_node = None
@@ -302,8 +393,6 @@ def update_edge_weights_using_alignments(gaf_path, graph: DiGraph, min_width=0.5
 
             path = tuple(map(int,re.findall(r'\d+', tokens[5])))
 
-            print(path)
-
             for i in range(len(path) - 1):
                 a = int(path[i])
                 b = int(path[i+1])
@@ -362,6 +451,19 @@ def get_region_from_bam(output_directory, bam_path, region_string, tokenator, ti
         return None
 
     return local_bam_path
+
+
+def get_read_names_from_bam(bam_path):
+    read_names = list()
+
+    bam = pysam.AlignmentFile(bam_path, 'rb')
+
+    print(bam_path)
+
+    for alignment in bam:
+        read_names.append(alignment.query_name)
+
+    return read_names
 
 
 # Requires samtools installed!
@@ -811,6 +913,7 @@ def main():
 
     output_fasta_path = os.path.join(output_directory, "reads.fasta")
 
+    sample_to_reads = defaultdict(list)
     for path in bam_paths:
         print("bam_path:", path)
 
@@ -819,6 +922,12 @@ def main():
             bam_path=path,
             region_string=region_string,
             tokenator=tokenator)
+
+        read_names = get_read_names_from_bam(region_bam_path)
+
+        # TODO: catalog samples in a more robust way
+        sample_name = os.path.basename(path).replace(".bam","").split('_')[0]
+        sample_to_reads[sample_name] = read_names
 
         # This repeatedly appends one FASTA file
         get_reads_from_bam(
@@ -878,14 +987,12 @@ def main():
 
     histogram = IterativeHistogram(start=0, stop=1000, n_bins=200)
 
-    path_to_read_costs = [defaultdict(int) for x in range(len(paths))]
     read_id_map = IncrementalIdMap(offset=len(paths))
+    path_to_read_costs = defaultdict(int)
 
     # Because of the potential for supplementary alignments, need to first aggregate costs per read
     for bam_path in bam_paths:
         bam = pysam.AlignmentFile(bam_path, 'rb')
-
-        print(bam_path)
 
         total = 0.0
         n = 0.0
@@ -898,8 +1005,7 @@ def main():
             read_id = read_id_map.add(read_name)
 
             if not alignment.is_secondary:
-                path_to_read_costs[path_id][read_id] += edit_distance
-                print(path_id, read_id)
+                path_to_read_costs[(path_id,read_id)] += edit_distance
 
                 total += edit_distance
                 n += 1
@@ -912,26 +1018,18 @@ def main():
     reads_csv_path = os.path.join(output_directory, "reads.csv")
     read_id_map.write_to_file(reads_csv_path)
 
-    # c: cost (edit distance)
-    # r: read
-    # s: sample
-    # h: haplotype
+    sample_id_map = IncrementalIdMap()
+    for name in sample_names:
+        sample_id_map.add(name)
 
-    # cost = sum(c_r_h)
-    #
-    # boolean constraint: variables are boolean, and indicate read assignment to haplotypes
-    # for all r,h: 0 <= r_h <= 1
-    #
-    # completeness constraint: all reads must be assigned to exactly one haplotype
-    # for all r: sum(r_h,h) = 1
-    #
-    # ploidy_constraint: each sample must be aligned to at most 2 haps
-    # Must first group reads r by samples s, then for each sample group:
-    # is_active_h = sum(r_h,r) > 0
-    # x = sum(r_h,r)
-    #
-    #
+    sample_id_to_read_ids = dict()
+    # Make a duplicate of the sample->read mapping that uses ids instead of names
+    for sample_name,read_names in sample_to_reads.items():
+        read_ids = [read_id_map.get_id(x) for x in read_names]
+        sample_id = sample_id_map.get_id(sample_name)
+        sample_id_to_read_ids[sample_id] = read_ids
 
+    optimize_with_cpsat(path_to_read_costs=path_to_read_costs, reads=read_id_map, paths=paths, sample_to_reads=sample_id_to_read_ids)
 
     pyplot.show()
     pyplot.close()
