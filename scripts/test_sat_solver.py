@@ -192,23 +192,21 @@ def test():
     model.Add(r13b + r23b + r33b >= 1).OnlyEnforceIf(b3)
     model.Add(r13b + r23b + r33b == 0).OnlyEnforceIf(b3.Not())
 
-    # model.Add(b1 + b2 + b3 <= 2)
+    model.Add(b1 + b2 + b3 <= 2)
 
     # Objective
     # A case constructed so that every read has a different preferred haplotype.
     # The constraints on ploidy will need to prevent reads from being distributed evenly.
     model.Minimize(
-        3*r11a + 3*r11b +
+        1*r11a + 1*r11b +
         2*r12a + 2*r12b +
-        1*r13a + 1*r13b +
-        #
-        1*r21a + 1*r21b +
-        3*r22a + 3*r22b +
+        3*r13a + 3*r13b +
+        3*r21a + 3*r21b +
+        1*r22a + 1*r22b +
         2*r23a + 2*r23b +
-        #
-        1*r31a + 1*r31b +
+        3*r31a + 3*r31b +
         2*r32a + 2*r32b +
-        3*r33a + 3*r33b
+        1*r33a + 1*r33b
     )
 
     # Solve
