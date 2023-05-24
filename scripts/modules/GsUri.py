@@ -16,9 +16,13 @@ def decode_gs_uri(uri):
     return bucket, file_path
 
 
-def download_gs_uri(uri, output_directory, cache=True):
+def download_gs_uri(uri, output_directory, output_filename=None, cache=True):
     bucket, file_path = decode_gs_uri(uri)
-    output_path = os.path.join(output_directory,os.path.basename(file_path))
+
+    if output_filename is None:
+        output_path = os.path.join(output_directory,os.path.basename(file_path))
+    else:
+        output_path = os.path.join(output_directory,output_filename)
 
     if (not os.path.exists(output_path)) or (not cache):
         sys.stderr.write("Downloading: %s\n" % output_path)
