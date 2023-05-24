@@ -241,9 +241,17 @@ def optimize_with_flow(
     )
 
 
-def optimize_with_cpsat(path_to_read_costs, reads: IncrementalIdMap, paths: Paths, sample_to_reads: dict):
+def optimize_with_cpsat(
+        path_to_read_costs,
+        reads: IncrementalIdMap,
+        paths: Paths,
+        sample_to_reads: dict,
+        output_dir: str,
+        n_threads: int = 1):
+
     path_to_read_vars = dict()
     path_to_sample_vars = dict()
+    path_vars = dict()
 
     model = cp_model.CpModel()
 
@@ -278,55 +286,107 @@ def optimize_with_cpsat(path_to_read_costs, reads: IncrementalIdMap, paths: Path
     for sample_id,read_group in sample_to_reads.items():
         model.Add(sum([path_to_sample_vars[(path_id,sample_id)] for path_id in paths.ids()]) <= 2)
 
-    # Cost function
-    model.Minimize(sum([c*path_to_read_vars[e] for e,c in path_to_read_costs.items()]))
+    for path_id in paths.ids():
+        path_vars[path_id] = model.NewBoolVar("p%d" % path_id)
+
+        # Accumulate all possible assignments of this path to any reads
+        s = sum([path_to_read_vars[(path_id,read_id)] for read_id in reads.ids()])
+        model.Add(s >= 1).OnlyEnforceIf(path_vars[path_id])
+        model.Add(s == 0).OnlyEnforceIf(path_vars[path_id].Not())
+
+    # Cost term a: sum of edit distances for all reads assigned to haplotypes
+    cost_a = model.NewIntVar(0, 100_000_000, "cost_a")
+    model.Add(cost_a == sum([c*path_to_read_vars[e] for e,c in path_to_read_costs.items()]))
+
+    # Cost term b: sum of unique haplotypes used
+    cost_b = model.NewIntVar(0, 100_000_000, "cost_b")
+    model.Add(cost_b == sum([x for x in path_vars.values()]))
+
+    n_vars = dict()
+    for i in range(1,len(paths)):
+        n_vars[i] = model.NewBoolVar("n" + str(i))
+        model.Add(cost_b == i).OnlyEnforceIf(n_vars[i])
+        model.Add(cost_b != i).OnlyEnforceIf(n_vars[i].Not())
 
     solver = cp_model.CpSolver()
-    status = solver.Solve(model)
+    solver.parameters.num_search_workers = n_threads
+    # solver.parameters.log_search_progress = True
+    # solver.log_callback = print
 
-    assert status == cp_model.OPTIMAL
+    results = list()
+    for i in range(1,len(paths)):
+        print(i)
+        model.ClearAssumptions()
+        model.AddAssumption(n_vars[i])
+        model.Minimize(cost_a)
 
-    print()
-    print("=====Stats:======")
-    print(solver.SolutionInfo())
-    print(solver.ResponseStats())
+        status = solver.Solve(model)
 
-    print("---- COSTS ----")
+        print("=====Stats:======")
+        print(solver.SolutionInfo())
+        print(solver.ResponseStats())
+
+        if not status == cp_model.OPTIMAL:
+            print(status)
+            print()
+            raise Exception("ERROR: non-optimal result from solver")
+
+        results.append([i,solver.Value(cost_a)])
+
+    for item in results:
+        print(','.join(list(map(str,item))))
+
+    output_path = os.path.join(output_dir, "solver_stats.txt")
+    with open(output_path, 'w') as file:
+        file.write(str(solver.SolutionInfo()))
+        file.write(str(solver.ResponseStats()))
+
+    output_path = os.path.join(output_dir, "paths_used.csv")
+    with open(output_path, 'w') as file:
+        for path_id,var in path_vars.items():
+            file.write("%d,%d\n" % (path_id, solver.Value(path_vars[path_id])))
+
+    output_subdirectory = os.path.join(output_dir,"assignment_costs")
+    if not os.path.exists(output_subdirectory):
+        os.makedirs(output_subdirectory)
+
     for sample_id,read_group in sample_to_reads.items():
-        print("SAMPLE %d" % sample_id)
+        output_path = os.path.join(output_subdirectory, "%s.csv" % sample_id)
 
-        for read_id in read_group:
-            sys.stdout.write("\tr%d" % read_id)
-        sys.stdout.write("\n")
-
-        for path_id in paths.ids():
-            sys.stdout.write("p%d\t" % path_id)
-
+        with open(output_path, 'w') as file:
             for read_id in read_group:
-                c = path_to_read_costs[(path_id,read_id)]
-                sys.stdout.write("%d\t" % c)
+                file.write(",r%d" % read_id)
+            file.write("\n")
 
-            sys.stdout.write("\n")
+            for path_id in paths.ids():
+                file.write("p%d," % path_id)
 
-    print()
-    print("---- RESULTS ----")
+                for read_id in read_group:
+                    c = path_to_read_costs[(path_id,read_id)]
+                    file.write("%d," % c)
+
+                file.write("\n")
+
+    output_subdirectory = os.path.join(output_dir,"assignments")
+    if not os.path.exists(output_subdirectory):
+        os.makedirs(output_subdirectory)
+
     for sample_id,read_group in sample_to_reads.items():
-        print("SAMPLE %d" % sample_id)
-
-        for read_id in read_group:
-            sys.stdout.write("\tr%d" % read_id)
-        sys.stdout.write("\tis_path_used\n")
-
-        for path_id in paths.ids():
-            sys.stdout.write("p%d\t" % path_id)
-
+        output_path = os.path.join(output_subdirectory, "%s.csv" % sample_id)
+        with open(output_path, 'w') as file:
             for read_id in read_group:
-                v = solver.Value(path_to_read_vars[(path_id,read_id)])
-                c = path_to_read_costs[(path_id,read_id)]
-                sys.stdout.write("%d\t" % v)
+                file.write(",r%d" % read_id)
+            file.write(",is_path_used\n")
 
-            sys.stdout.write("%d" % solver.Value(path_to_sample_vars[(path_id,sample_id)]))
-            sys.stdout.write("\n")
+            for path_id in paths.ids():
+                file.write("p%d," % path_id)
+
+                for read_id in read_group:
+                    v = solver.Value(path_to_read_vars[(path_id,read_id)])
+                    file.write("%d," % v)
+
+                file.write("%d" % solver.Value(path_to_sample_vars[(path_id,sample_id)]))
+                file.write("\n")
 
     return
 
@@ -998,13 +1058,14 @@ def main():
         n = 0.0
         for alignment in bam:
             # TODO: verify that the NM tag is not double-counting softclips/hardclips in a supplementary alignment?
-            edit_distance = alignment.get_tag("NM")
             path_name = bam.header.get_reference_name(alignment.reference_id)
             path_id = paths.get_path_id(path_name)
             read_name = alignment.query_name
             read_id = read_id_map.add(read_name)
 
+            # TODO: more filtering? possible to have unmapped reads?
             if not alignment.is_secondary:
+                edit_distance = alignment.get_tag("NM")
                 path_to_read_costs[(path_id,read_id)] += edit_distance
 
                 total += edit_distance
@@ -1022,14 +1083,21 @@ def main():
     for name in sample_names:
         sample_id_map.add(name)
 
+    # Make a duplicate of the sample->read mapping, using ids instead of names
     sample_id_to_read_ids = dict()
-    # Make a duplicate of the sample->read mapping that uses ids instead of names
     for sample_name,read_names in sample_to_reads.items():
         read_ids = [read_id_map.get_id(x) for x in read_names]
         sample_id = sample_id_map.get_id(sample_name)
         sample_id_to_read_ids[sample_id] = read_ids
 
-    optimize_with_cpsat(path_to_read_costs=path_to_read_costs, reads=read_id_map, paths=paths, sample_to_reads=sample_id_to_read_ids)
+    optimize_with_cpsat(
+        path_to_read_costs=path_to_read_costs,
+        reads=read_id_map,
+        paths=paths,
+        sample_to_reads=sample_id_to_read_ids,
+        n_threads=30,
+        output_dir=output_directory
+    )
 
     pyplot.show()
     pyplot.close()
