@@ -1,7 +1,10 @@
+import time
+from threading import Timer
 import sys
 
 from modules.IterativeHistogram import IterativeHistogram
 from modules.IncrementalIdMap import IncrementalIdMap
+from modules.Bam import get_region_from_bam
 from modules.Authenticator import *
 from modules.Paths import Paths
 from modules.GsUri import *
@@ -241,6 +244,30 @@ def optimize_with_flow(
     )
 
 
+"""
+Taken from:
+https://stackoverflow.com/questions/73996059/ortools-cp-sat-how-to-fetch-the-feasible-solution-if-the-best-incumbent-solu
+"""
+class ObjectiveEarlyStopping(cp_model.CpSolverSolutionCallback):
+    def __init__(self, timer_limit: int):
+        super(ObjectiveEarlyStopping, self).__init__()
+        self._timer_limit = timer_limit
+        self._timer = None
+
+    def on_solution_callback(self):
+        self._reset_timer()
+
+    def _reset_timer(self):
+        if self._timer:
+            self._timer.cancel()
+        self._timer = Timer(self._timer_limit, self.StopSearch)
+        self._timer.start()
+
+    def StopSearch(self):
+        print(f"{self._timer_limit} seconds without improvement")
+        super().StopSearch()
+
+
 def optimize_with_cpsat(
         path_to_read_costs,
         reads: IncrementalIdMap,
@@ -272,7 +299,7 @@ def optimize_with_cpsat(
 
         for id in read_group:
             if not type(id) == int:
-                raise Exception("ERROR: non integer ids used for sample: %s" % str(id))
+                raise Exception("ERROR: non integer ids used for read: %s in sample: %s" % (str(id),str(sample_id)))
 
         for path_id in paths.ids():
             edge = (path_id,sample_id)
@@ -302,91 +329,112 @@ def optimize_with_cpsat(
     cost_b = model.NewIntVar(0, 100_000_000, "cost_b")
     model.Add(cost_b == sum([x for x in path_vars.values()]))
 
+    # n diploid samples can at most fill n*2 haplotypes
+    # Sometimes there are also fewer candidate paths than that
+    max_feasible_haplotypes = min(len(paths), len(sample_to_reads)*2) + 1
+
     n_vars = dict()
-    for i in range(1,len(paths)):
+    for i in range(1,max_feasible_haplotypes):
         n_vars[i] = model.NewBoolVar("n" + str(i))
         model.Add(cost_b == i).OnlyEnforceIf(n_vars[i])
         model.Add(cost_b != i).OnlyEnforceIf(n_vars[i].Not())
 
     solver = cp_model.CpSolver()
     solver.parameters.num_search_workers = n_threads
+    # solver.parameters.max_time_in_seconds = 300.0
     # solver.parameters.log_search_progress = True
     # solver.log_callback = print
 
+    # TODO: normalize scores and cache results for all iterations
+    # TODO: normalize scores and cache results for all iterations
+    # TODO: normalize scores and cache results for all iterations
+    # TODO: normalize scores and cache results for all iterations
+    # TODO: normalize scores and cache results for all iterations
+    # TODO: normalize scores and cache results for all iterations
+
+    status = None
     results = list()
-    for i in range(1,len(paths)):
+    for i in range(1,max_feasible_haplotypes):
         print(i)
         model.ClearAssumptions()
         model.AddAssumption(n_vars[i])
         model.Minimize(cost_a)
 
-        status = solver.Solve(model)
+        if status == cp_model.OPTIMAL:
+            model.ClearHints()
+            for var in path_to_read_vars.values():
+                model.AddHint(var, solver.Value(var))
+
+        status = solver.SolveWithSolutionCallback(model, ObjectiveEarlyStopping(60))
 
         print("=====Stats:======")
         print(solver.SolutionInfo())
         print(solver.ResponseStats())
 
-        if not status == cp_model.OPTIMAL:
-            print(status)
-            print()
-            raise Exception("ERROR: non-optimal result from solver")
+        cost = None
 
-        results.append([i,solver.Value(cost_a)])
+        if not (status == cp_model.OPTIMAL or status == cp_model.FEASIBLE):
+            print("WARNING: non-optimal result from solver")
+            print()
+        else:
+            cost = solver.Value(cost_a)
+
+        results.append([i,cost])
 
     for item in results:
         print(','.join(list(map(str,item))))
 
-    output_path = os.path.join(output_dir, "solver_stats.txt")
-    with open(output_path, 'w') as file:
-        file.write(str(solver.SolutionInfo()))
-        file.write(str(solver.ResponseStats()))
-
-    output_path = os.path.join(output_dir, "paths_used.csv")
-    with open(output_path, 'w') as file:
-        for path_id,var in path_vars.items():
-            file.write("%d,%d\n" % (path_id, solver.Value(path_vars[path_id])))
-
-    output_subdirectory = os.path.join(output_dir,"assignment_costs")
-    if not os.path.exists(output_subdirectory):
-        os.makedirs(output_subdirectory)
-
-    for sample_id,read_group in sample_to_reads.items():
-        output_path = os.path.join(output_subdirectory, "%s.csv" % sample_id)
-
-        with open(output_path, 'w') as file:
-            for read_id in read_group:
-                file.write(",r%d" % read_id)
-            file.write("\n")
-
-            for path_id in paths.ids():
-                file.write("p%d," % path_id)
-
-                for read_id in read_group:
-                    c = path_to_read_costs[(path_id,read_id)]
-                    file.write("%d," % c)
-
-                file.write("\n")
-
-    output_subdirectory = os.path.join(output_dir,"assignments")
-    if not os.path.exists(output_subdirectory):
-        os.makedirs(output_subdirectory)
-
-    for sample_id,read_group in sample_to_reads.items():
-        output_path = os.path.join(output_subdirectory, "%s.csv" % sample_id)
-        with open(output_path, 'w') as file:
-            for read_id in read_group:
-                file.write(",r%d" % read_id)
-            file.write(",is_path_used\n")
-
-            for path_id in paths.ids():
-                file.write("p%d," % path_id)
-
-                for read_id in read_group:
-                    v = solver.Value(path_to_read_vars[(path_id,read_id)])
-                    file.write("%d," % v)
-
-                file.write("%d" % solver.Value(path_to_sample_vars[(path_id,sample_id)]))
-                file.write("\n")
+    # output_path = os.path.join(output_dir, "solver_stats.txt")
+    # with open(output_path, 'w') as file:
+    #     file.write(str(solver.SolutionInfo()))
+    #     file.write(str(solver.ResponseStats()))
+    #
+    # output_path = os.path.join(output_dir, "paths_used.csv")
+    # with open(output_path, 'w') as file:
+    #     for path_id,var in path_vars.items():
+    #         file.write("%d,%d\n" % (path_id, solver.Value(path_vars[path_id])))
+    #
+    # output_subdirectory = os.path.join(output_dir,"assignment_costs")
+    # if not os.path.exists(output_subdirectory):
+    #     os.makedirs(output_subdirectory)
+    #
+    # for sample_id,read_group in sample_to_reads.items():
+    #     output_path = os.path.join(output_subdirectory, "%s.csv" % sample_id)
+    #
+    #     with open(output_path, 'w') as file:
+    #         for read_id in read_group:
+    #             file.write(",r%d" % read_id)
+    #         file.write("\n")
+    #
+    #         for path_id in paths.ids():
+    #             file.write("p%d," % path_id)
+    #
+    #             for read_id in read_group:
+    #                 c = path_to_read_costs[(path_id,read_id)]
+    #                 file.write("%d," % c)
+    #
+    #             file.write("\n")
+    #
+    # output_subdirectory = os.path.join(output_dir,"assignments")
+    # if not os.path.exists(output_subdirectory):
+    #     os.makedirs(output_subdirectory)
+    #
+    # for sample_id,read_group in sample_to_reads.items():
+    #     output_path = os.path.join(output_subdirectory, "%s.csv" % sample_id)
+    #     with open(output_path, 'w') as file:
+    #         for read_id in read_group:
+    #             file.write(",r%d" % read_id)
+    #         file.write(",is_path_used\n")
+    #
+    #         for path_id in paths.ids():
+    #             file.write("p%d," % path_id)
+    #
+    #             for read_id in read_group:
+    #                 v = solver.Value(path_to_read_vars[(path_id,read_id)])
+    #                 file.write("%d," % v)
+    #
+    #             file.write("%d" % solver.Value(path_to_sample_vars[(path_id,sample_id)]))
+    #             file.write("\n")
 
     return
 
@@ -444,7 +492,20 @@ def enumerate_paths_using_alignments(paths: Paths, graph: DiGraph, alleles, gaf_
     return output_paths
 
 
-def update_edge_weights_using_alignments(gaf_path, graph: DiGraph, min_width=0.5, max_width=5.0):
+def update_edge_weights_using_alignments(alleles, gaf_path, ref_sample_name, graph: DiGraph, min_width=0.5, max_width=5.0):
+    start_node = None
+    stop_node = None
+
+    # For this implementation we enforce that reads must span the full graph, so start and end ref nodes are needed.
+    # TODO: A smarter implementation might allow partial walks to be extended using all walks from a sample.
+    # But it would need to be capable of aborting intractable traversals as a result of too many walks
+    for n in graph.nodes():
+        if ref_sample_name in alleles[n].samples:
+            if len(graph.in_edges(n)) == 0:
+                start_node = n
+            if len(graph.out_edges(n)) == 0:
+                stop_node = n
+
     max_weight = 0.0
 
     with open(gaf_path, 'r') as file:
@@ -453,18 +514,20 @@ def update_edge_weights_using_alignments(gaf_path, graph: DiGraph, min_width=0.5
 
             path = tuple(map(int,re.findall(r'\d+', tokens[5])))
 
+            # Only count spanning reads
+            # if not (len(path) > 1 and path[0] == start_node and path[-1] == stop_node):
+            #     continue
+
             for i in range(len(path) - 1):
                 a = int(path[i])
                 b = int(path[i+1])
 
                 if graph.has_edge(a,b):
-                    print(a,b)
                     graph[a][b]["weight"] += 1
                     if graph[a][b]["weight"] > max_weight:
                         max_weight = graph[a][b]["weight"]
 
                 if graph.has_edge(b,a):
-                    print(b,a)
                     graph[b][a]["weight"] += 1
                     if graph[b][a]["weight"] > max_weight:
                         max_weight = graph[b][a]["weight"]
@@ -473,44 +536,6 @@ def update_edge_weights_using_alignments(gaf_path, graph: DiGraph, min_width=0.5
         w = graph[edge[0]][edge[1]]["weight"]
         if w > 0:
             graph[edge[0]][edge[1]]["weight"] = min_width + (w/max_weight)*(max_width - min_width)
-
-
-def get_region_from_bam(output_directory, bam_path, region_string, tokenator, timeout=60*20):
-    prefix = os.path.basename(bam_path).split('.')[0]
-    filename = prefix + "_" + region_string.replace(":","_") + ".bam"
-    local_bam_path = os.path.join(output_directory, filename)
-
-    # Enable caching by path name
-    if os.path.exists(local_bam_path):
-        return local_bam_path
-
-    tokenator.update_environment()
-
-    args = [
-        "samtools",
-        "view",
-        "-bh",
-        "-o", local_bam_path,
-        bam_path,
-        region_string
-    ]
-
-    sys.stderr.write(" ".join(args)+'\n')
-
-    try:
-        p1 = subprocess.run(args, check=True, stderr=subprocess.PIPE, timeout=timeout)
-
-    except subprocess.CalledProcessError as e:
-        sys.stderr.write("Status: FAIL " + '\n' + (e.stderr.decode("utf8") if e.stderr is not None else "") + '\n')
-        sys.stderr.flush()
-        return None
-
-    except subprocess.TimeoutExpired as e:
-        sys.stderr.write("Status: FAIL due to timeout " + '\n' + (e.stderr.decode("utf8") if e.stderr is not None else "") + '\n')
-        sys.stderr.flush()
-        return None
-
-    return local_bam_path
 
 
 def get_read_names_from_bam(bam_path):
@@ -655,6 +680,7 @@ def vcf_to_graph(ref_path, vcf_paths, chromosome, ref_start, ref_stop, ref_sampl
         sample_name = os.path.basename(vcf_path).split("_")[0]
 
         with open(vcf_path, 'rb') as file:
+            print(vcf_path)
             vcf = VCFReader(file)
 
             records = vcf.fetch(region_string)
@@ -666,11 +692,20 @@ def vcf_to_graph(ref_path, vcf_paths, chromosome, ref_start, ref_stop, ref_sampl
 
                 # One VCF per sample, no iterating of samples needed
                 call = record.samples[0]
-                gt = [int(call.data.GT[0]), int(call.data.GT[-1])]
+                gt = [int(call.data.GT[0]) if call.data.GT[0] != '.' else 0, int(call.data.GT[-1]) if call.data.GT[-1] != '.' else 0]
+
                 print("gt:\t\t%d/%d" % (gt[0], gt[1]))
                 print("ref_length:\t%d" % len(record.alleles[0]))
+
+                b_length = None
+                if record.var_subtype == "DUP":
+                    print(record.INFO)
+                    b_length = record.INFO["SVLEN"]
+                else:
+                    b_length = len(record.alleles[gt[1]])
+
                 print("a_length:\t%d" % len(record.alleles[gt[0]]))
-                print("b_length:\t%d" % len(record.alleles[gt[1]]))
+                print("b_length:\t%d" % b_length)
                 print("is_sv_precise:\t%d" % record.is_sv_precise)
 
                 # Iterate unique, non-ref alleles only
@@ -679,14 +714,20 @@ def vcf_to_graph(ref_path, vcf_paths, chromosome, ref_start, ref_stop, ref_sampl
 
                     if allele_index != 0:
                         l = len(record.alleles[0]) if record.alleles[0] != 'N' else 0
-                        not_insert = (l >= len(record.alleles[allele_index]))
+                        not_insert = (l >= b_length)
 
                         # We are sorting by ref coordinates, so we use the ref allele start/stop to keep track of
                         # where the alt allele will be substituted
                         start = int(record.start)
                         stop = start + l + int(not_insert)
                         sequence = str(record.alleles[allele_index])
-                        sequence = sequence if sequence != 'N' else ''
+
+                        if sequence.strip() == "<DUP>":
+                            sequence = ref_sequence[start:start+b_length+1]
+                        elif sequence == 'N':
+                            sequence = ''
+                        else:
+                            pass
 
                         # Collapse identical alleles by hashing them as a fn of start,stop,sequence
                         # But keep track of which samples are collapsed together
@@ -782,11 +823,33 @@ def main():
     n_sort_threads = 4
 
     chromosome = "chr20"
-    ref_start = 47474020
-    ref_stop = 47477018
+
+    # ref_start = 47474020
+    # ref_stop = 47477018
 
     # ref_start = 54974920
     # ref_stop = 54977307
+
+    # ref_start = 55000754
+    # ref_stop = 55000852
+
+    ref_start = 55486867
+    ref_stop = 55492722
+
+    # ref_start = 18828383
+    # ref_stop = 18828733
+
+    # ref_start = 18689217
+    # ref_stop = 18689256
+
+    # ref_start = 18259924
+    # ref_stop = 18261835
+
+    # ref_start = 10437604
+    # ref_stop = 10440525
+
+    # ref_start = 7901320
+    # ref_stop = 7901444
 
     region_string = chromosome + ":" + str(ref_start) + "-" + str(ref_stop)
 
@@ -802,53 +865,53 @@ def main():
     input_directory = "/home/ryan/code/hapslap/data/test/hprc/"
 
     sample_names = [
-        "HG002",
-        "HG00438",
-        "HG005",
-        "HG00621",
-        "HG00673",
-        "HG00733",
-        "HG00735",
-        "HG00741",
-        "HG01071",
-        "HG01106",
-        "HG01109",
-        "HG01123",
-        "HG01175",
-        "HG01243",
-        "HG01258",
-        "HG01358",
-        "HG01361",
-        "HG01891",
-        "HG01928",
-        "HG01952",
-        "HG01978",
-        "HG02055",
-        "HG02080",
-        "HG02109",
-        "HG02145",
-        "HG02148",
-        "HG02257",
-        "HG02486",
-        "HG02559",
-        "HG02572",
-        "HG02622",
-        "HG02630",
-        "HG02717",
-        "HG02723",
-        "HG02818",
-        "HG02886",
+        # "HG002",
+        # "HG00438",
+        # "HG005",
+        # "HG00621",
+        # "HG00673",
+        # "HG00733",
+        # "HG00735",
+        # "HG00741",
+        # "HG01071",
+        # "HG01106",
+        # "HG01109",
+        # "HG01123",
+        # "HG01175",
+        # "HG01243",
+        # "HG01258",
+        # "HG01358",
+        # "HG01361",
+        # "HG01891",
+        # "HG01928",
+        # "HG01952",
+        # "HG01978",
+        # "HG02055",
+        # "HG02080",
+        # "HG02109",
+        # "HG02145",
+        # "HG02148",
+        # "HG02257",
+        # "HG02486",
+        # "HG02559",
+        # "HG02572",
+        # "HG02622",
+        # "HG02630",
+        # "HG02717",
+        # "HG02723",
+        # "HG02818",
+        # "HG02886",
         "HG03098",
-        "HG03453",
-        "HG03486",
-        "HG03492",
-        "HG03516",
-        "HG03540",
-        "HG03579",
-        "NA18906",
-        "NA19240",
-        "NA20129",
-        "NA21309"
+        # "HG03453",
+        # "HG03486",
+        # "HG03492",
+        # "HG03516",
+        # "HG03540",
+        # "HG03579",
+        # "NA18906",
+        # "NA19240",
+        # "NA20129",
+        # "NA21309"
     ]
 
     data_per_sample = defaultdict(dict)
@@ -1002,7 +1065,11 @@ def main():
         gfa_path=output_gfa_path,
         fasta_path=output_fasta_path)
 
-    update_edge_weights_using_alignments(gaf_path=output_gaf_path, graph=graph)
+    update_edge_weights_using_alignments(
+        alleles=alleles,
+        gaf_path=output_gaf_path,
+        ref_sample_name=ref_sample_name,
+        graph=graph)
 
     plot_path = os.path.join(output_directory, "dag_aligned.png")
     plot_graph(
@@ -1083,10 +1150,18 @@ def main():
     for name in sample_names:
         sample_id_map.add(name)
 
+    sample_id_path = os.path.join(output_directory, "samples.csv")
+    with open(sample_id_path, 'w') as file:
+        for id,name in sample_id_map:
+            file.write("%d,%s\n" % (id,name))
+
     # Make a duplicate of the sample->read mapping, using ids instead of names
     sample_id_to_read_ids = dict()
     for sample_name,read_names in sample_to_reads.items():
-        read_ids = [read_id_map.get_id(x) for x in read_names]
+        # Sometimes a read may not be in the id_map, because the id_map is generated only using reads that
+        # were aligned in the BAM of reads-to-path. We skip any read that doesn't appear in the mappings.
+        read_ids = filter(None,[read_id_map.get_id(x) for x in read_names])
+
         sample_id = sample_id_map.get_id(sample_name)
         sample_id_to_read_ids[sample_id] = read_ids
 
