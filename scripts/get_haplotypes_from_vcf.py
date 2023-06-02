@@ -268,6 +268,108 @@ class ObjectiveEarlyStopping(cp_model.CpSolverSolutionCallback):
         super().StopSearch()
 
 
+class Variables:
+    def __init__(self):
+        # key = (path_id,read_id)
+        self.path_to_read = dict()
+
+        # key = (path_id,sample_id)
+        self.path_to_sample = dict()
+
+        # key = path_id
+        self.path = dict()
+
+        # key = integer of n >= 1
+        self.n = dict()
+
+        # Objective a, explicitly minimized
+        self.cost_a = None
+
+        # Objective b, marginalized
+        self.cost_b = None
+
+        # Return code of optimization
+        self.status = None
+
+        # Optimizer stats
+        self.response_stats = None
+
+        # Cache contains integer values instead of the cp_model var objects, and can therefore be used downstream
+        self.is_cache = False
+
+    '''
+    Construct a copy of the variables object, where the values are stored instead of the cp_model variable objects. 
+    '''
+    def get_cache(self, status, solver: cp_model.CpSolver):
+        cache = Variables()
+
+        if not (status == cp_model.OPTIMAL or status == cp_model.FEASIBLE):
+            sys.stderr.write("WARNING: non-optimal result from solver")
+            cache.cost_a = None
+            cache.cost_b = None
+
+        else:
+            for key in self.path_to_read:
+                cache.path_to_read[key] = solver.Value(self.path_to_read[key])
+
+            for key in self.path_to_sample:
+                cache.path_to_sample[key] = solver.Value(self.path_to_sample[key])
+
+            for key in self.path:
+                cache.path[key] = solver.Value(self.path[key])
+
+            for key in self.n:
+                cache.n[key] = solver.Value(self.n[key])
+
+            cache.cost_a = solver.Value(self.cost_a)
+            cache.cost_b = solver.Value(self.cost_b)
+
+        cache.response_stats = solver.ResponseStats()
+        cache.status = status
+        cache.is_cache = True
+
+        return cache
+
+    def write_results_to_file(self, output_dir: str):
+        if not self.is_cache:
+            raise Exception("ERROR: cannot write live instance of variables, must get cache instead")
+
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+
+        output_path = os.path.join(output_dir, "path_to_read.csv")
+        with open(output_path, 'w') as file:
+            file.write("path_id,read_id,value\n")
+            for key,value in self.path_to_read.items():
+                file.write("%d,%d,%d" % (key[0],key[1],value))
+                file.write('\n')
+
+        output_path = os.path.join(output_dir, "path_to_sample.csv")
+        with open(output_path, 'w') as file:
+            file.write("path_id,sample_id,value\n")
+            for key,value in self.path_to_sample.items():
+                file.write("%d,%d,%d" % (key[0],key[1],value))
+                file.write('\n')
+
+        output_path = os.path.join(output_dir, "path.csv")
+        with open(output_path, 'w') as file:
+            file.write("path_id,value\n")
+            for item in self.path.items():
+                file.write(','.join(list(map(str,item))))
+                file.write('\n')
+
+        output_path = os.path.join(output_dir, "n.csv")
+        with open(output_path, 'w') as file:
+            file.write("n,value\n")
+            for item in self.n.items():
+                file.write(','.join(list(map(str,item))))
+                file.write('\n')
+
+        output_path = os.path.join(output_dir, "stats.csv")
+        with open(output_path, 'w') as file:
+            file.write(self.response_stats)
+
+
 def optimize_with_cpsat(
         path_to_read_costs,
         reads: IncrementalIdMap,
@@ -276,20 +378,20 @@ def optimize_with_cpsat(
         output_dir: str,
         n_threads: int = 1):
 
-    path_to_read_vars = dict()
-    path_to_sample_vars = dict()
-    path_vars = dict()
+    output_subdir = os.path.join(output_dir, "optimizer")
+
+    vars = Variables()
 
     model = cp_model.CpModel()
 
     # Define read assignment variables
     for edge in path_to_read_costs.keys():
         # 'edge' is a tuple with path_id,read_id
-        path_to_read_vars[edge] = model.NewIntVar(0, 1, "p%dr%d" % edge)
+        vars.path_to_read[edge] = model.NewIntVar(0, 1, "p%dr%d" % edge)
 
     # Constraint: each read must map to only one haplotype/path
     for read_id in reads.ids():
-        model.Add(sum([path_to_read_vars[(path_id,read_id)] for path_id in paths.ids()]) == 1)
+        model.Add(sum([vars.path_to_read[(path_id,read_id)] for path_id in paths.ids()]) == 1)
 
     # Constraint: each sample's reads must map to at most two haplotypes/paths
     # Use a boolean indicator to tell whether any of a sample's reads are assigned to each haplotype/path
@@ -303,41 +405,40 @@ def optimize_with_cpsat(
 
         for path_id in paths.ids():
             edge = (path_id,sample_id)
-            path_to_sample_vars[edge] = model.NewBoolVar("p%ds%d" % edge)
+            vars.path_to_sample[edge] = model.NewBoolVar("p%ds%d" % edge)
 
-            s = sum([path_to_read_vars[(path_id,read_id)] for read_id in read_group])
-            model.Add(s >= 1).OnlyEnforceIf(path_to_sample_vars[edge])
-            model.Add(s == 0).OnlyEnforceIf(path_to_sample_vars[edge].Not())
+            s = sum([vars.path_to_read[(path_id,read_id)] for read_id in read_group])
+            model.Add(s >= 1).OnlyEnforceIf(vars.path_to_sample[edge])
+            model.Add(s == 0).OnlyEnforceIf(vars.path_to_sample[edge].Not())
 
     # Now that the boolean indicators have been defined, use them to add a constraint on ploidy per sample
     for sample_id,read_group in sample_to_reads.items():
-        model.Add(sum([path_to_sample_vars[(path_id,sample_id)] for path_id in paths.ids()]) <= 2)
+        model.Add(sum([vars.path_to_sample[(path_id,sample_id)] for path_id in paths.ids()]) <= 2)
 
     for path_id in paths.ids():
-        path_vars[path_id] = model.NewBoolVar("p%d" % path_id)
+        vars.path[path_id] = model.NewBoolVar("p" + str(path_id))
 
         # Accumulate all possible assignments of this path to any reads
-        s = sum([path_to_read_vars[(path_id,read_id)] for read_id in reads.ids()])
-        model.Add(s >= 1).OnlyEnforceIf(path_vars[path_id])
-        model.Add(s == 0).OnlyEnforceIf(path_vars[path_id].Not())
+        s = sum([vars.path_to_read[(path_id,read_id)] for read_id in reads.ids()])
+        model.Add(s >= 1).OnlyEnforceIf(vars.path[path_id])
+        model.Add(s == 0).OnlyEnforceIf(vars.path[path_id].Not())
 
     # Cost term a: sum of edit distances for all reads assigned to haplotypes
-    cost_a = model.NewIntVar(0, 100_000_000, "cost_a")
-    model.Add(cost_a == sum([c*path_to_read_vars[e] for e,c in path_to_read_costs.items()]))
+    vars.cost_a = model.NewIntVar(0, 100_000_000, "cost_a")
+    model.Add(vars.cost_a == sum([c*vars.path_to_read[e] for e,c in path_to_read_costs.items()]))
 
     # Cost term b: sum of unique haplotypes used
-    cost_b = model.NewIntVar(0, 100_000_000, "cost_b")
-    model.Add(cost_b == sum([x for x in path_vars.values()]))
+    vars.cost_b = model.NewIntVar(0, 100_000_000, "cost_b")
+    model.Add(vars.cost_b == sum([x for x in vars.path.values()]))
 
     # n diploid samples can at most fill n*2 haplotypes
-    # Sometimes there are also fewer candidate paths than that
+    # Sometimes there are may be fewer candidate paths than that
     max_feasible_haplotypes = min(len(paths), len(sample_to_reads)*2) + 1
 
-    n_vars = dict()
     for i in range(1,max_feasible_haplotypes):
-        n_vars[i] = model.NewBoolVar("n" + str(i))
-        model.Add(cost_b == i).OnlyEnforceIf(n_vars[i])
-        model.Add(cost_b != i).OnlyEnforceIf(n_vars[i].Not())
+        vars.n[i] = model.NewBoolVar("n" + str(i))
+        model.Add(vars.cost_b == i).OnlyEnforceIf(vars.n[i])
+        model.Add(vars.cost_b != i).OnlyEnforceIf(vars.n[i].Not())
 
     solver = cp_model.CpSolver()
     solver.parameters.num_search_workers = n_threads
@@ -345,24 +446,18 @@ def optimize_with_cpsat(
     # solver.parameters.log_search_progress = True
     # solver.log_callback = print
 
-    # TODO: normalize scores and cache results for all iterations
-    # TODO: normalize scores and cache results for all iterations
-    # TODO: normalize scores and cache results for all iterations
-    # TODO: normalize scores and cache results for all iterations
-    # TODO: normalize scores and cache results for all iterations
-    # TODO: normalize scores and cache results for all iterations
-
     status = None
     results = list()
+
     for i in range(1,max_feasible_haplotypes):
         print(i)
         model.ClearAssumptions()
-        model.AddAssumption(n_vars[i])
-        model.Minimize(cost_a)
+        model.AddAssumption(vars.n[i])
+        model.Minimize(vars.cost_a)
 
         if status == cp_model.OPTIMAL:
             model.ClearHints()
-            for var in path_to_read_vars.values():
+            for var in vars.path_to_read.values():
                 model.AddHint(var, solver.Value(var))
 
         status = solver.SolveWithSolutionCallback(model, ObjectiveEarlyStopping(60))
@@ -371,72 +466,13 @@ def optimize_with_cpsat(
         print(solver.SolutionInfo())
         print(solver.ResponseStats())
 
-        cost = None
+        results.append([i,vars.get_cache(status=status, solver=solver)])
 
-        if not (status == cp_model.OPTIMAL or status == cp_model.FEASIBLE):
-            print("WARNING: non-optimal result from solver")
-            print()
-        else:
-            cost = solver.Value(cost_a)
+    for i,cache in results:
+        print("%d,%d" % (i, cache.cost_a))
+        cache.write_results_to_file(output_dir=os.path.join(output_subdir,str(i)))
 
-        results.append([i,cost])
-
-    for item in results:
-        print(','.join(list(map(str,item))))
-
-    # output_path = os.path.join(output_dir, "solver_stats.txt")
-    # with open(output_path, 'w') as file:
-    #     file.write(str(solver.SolutionInfo()))
-    #     file.write(str(solver.ResponseStats()))
-    #
-    # output_path = os.path.join(output_dir, "paths_used.csv")
-    # with open(output_path, 'w') as file:
-    #     for path_id,var in path_vars.items():
-    #         file.write("%d,%d\n" % (path_id, solver.Value(path_vars[path_id])))
-    #
-    # output_subdirectory = os.path.join(output_dir,"assignment_costs")
-    # if not os.path.exists(output_subdirectory):
-    #     os.makedirs(output_subdirectory)
-    #
-    # for sample_id,read_group in sample_to_reads.items():
-    #     output_path = os.path.join(output_subdirectory, "%s.csv" % sample_id)
-    #
-    #     with open(output_path, 'w') as file:
-    #         for read_id in read_group:
-    #             file.write(",r%d" % read_id)
-    #         file.write("\n")
-    #
-    #         for path_id in paths.ids():
-    #             file.write("p%d," % path_id)
-    #
-    #             for read_id in read_group:
-    #                 c = path_to_read_costs[(path_id,read_id)]
-    #                 file.write("%d," % c)
-    #
-    #             file.write("\n")
-    #
-    # output_subdirectory = os.path.join(output_dir,"assignments")
-    # if not os.path.exists(output_subdirectory):
-    #     os.makedirs(output_subdirectory)
-    #
-    # for sample_id,read_group in sample_to_reads.items():
-    #     output_path = os.path.join(output_subdirectory, "%s.csv" % sample_id)
-    #     with open(output_path, 'w') as file:
-    #         for read_id in read_group:
-    #             file.write(",r%d" % read_id)
-    #         file.write(",is_path_used\n")
-    #
-    #         for path_id in paths.ids():
-    #             file.write("p%d," % path_id)
-    #
-    #             for read_id in read_group:
-    #                 v = solver.Value(path_to_read_vars[(path_id,read_id)])
-    #                 file.write("%d," % v)
-    #
-    #             file.write("%d" % solver.Value(path_to_sample_vars[(path_id,sample_id)]))
-    #             file.write("\n")
-
-    return
+    return results
 
 
 def enumerate_paths_using_alignments(paths: Paths, graph: DiGraph, alleles, gaf_path, ref_sample_name, output_directory):
@@ -515,8 +551,8 @@ def update_edge_weights_using_alignments(alleles, gaf_path, ref_sample_name, gra
             path = tuple(map(int,re.findall(r'\d+', tokens[5])))
 
             # Only count spanning reads
-            # if not (len(path) > 1 and path[0] == start_node and path[-1] == stop_node):
-            #     continue
+            if not (len(path) > 1 and path[0] == start_node and path[-1] == stop_node):
+                continue
 
             for i in range(len(path) - 1):
                 a = int(path[i])
@@ -833,8 +869,8 @@ def main():
     # ref_start = 55000754
     # ref_stop = 55000852
 
-    ref_start = 55486867
-    ref_stop = 55492722
+    # ref_start = 55486867
+    # ref_stop = 55492722
 
     # ref_start = 18828383
     # ref_stop = 18828733
@@ -842,8 +878,8 @@ def main():
     # ref_start = 18689217
     # ref_stop = 18689256
 
-    # ref_start = 18259924
-    # ref_stop = 18261835
+    ref_start = 18259924
+    ref_stop = 18261835
 
     # ref_start = 10437604
     # ref_stop = 10440525
@@ -865,10 +901,10 @@ def main():
     input_directory = "/home/ryan/code/hapslap/data/test/hprc/"
 
     sample_names = [
-        # "HG002",
-        # "HG00438",
-        # "HG005",
-        # "HG00621",
+        "HG002",
+        "HG00438",
+        "HG005",
+        "HG00621",
         # "HG00673",
         # "HG00733",
         # "HG00735",
@@ -901,7 +937,7 @@ def main():
         # "HG02723",
         # "HG02818",
         # "HG02886",
-        "HG03098",
+        # "HG03098",
         # "HG03453",
         # "HG03486",
         # "HG03492",
@@ -1160,12 +1196,12 @@ def main():
     for sample_name,read_names in sample_to_reads.items():
         # Sometimes a read may not be in the id_map, because the id_map is generated only using reads that
         # were aligned in the BAM of reads-to-path. We skip any read that doesn't appear in the mappings.
-        read_ids = filter(None,[read_id_map.get_id(x) for x in read_names])
+        read_ids = list(filter(None,[read_id_map.get_id(x) for x in read_names]))
 
         sample_id = sample_id_map.get_id(sample_name)
         sample_id_to_read_ids[sample_id] = read_ids
 
-    optimize_with_cpsat(
+    results = optimize_with_cpsat(
         path_to_read_costs=path_to_read_costs,
         reads=read_id_map,
         paths=paths,
@@ -1173,6 +1209,24 @@ def main():
         n_threads=30,
         output_dir=output_directory
     )
+
+    c_min = sys.maxsize
+    c_max = 0
+    n_min = None
+    n_max = None
+    for n,cache in results:
+        if cache.cost_a < c_min:
+            min_edit_distance = cache.cost_a
+            n_min = n
+
+        if cache.cost_a > c_max:
+            max_edit_distance = cache.cost_a
+            n_max = n
+
+    for n,cache in results:
+        c_norm = (float(cache.cost_a) - c_min) / float(c_max - c_min)
+        n_norm = (float(n) - n_min) / float(n_max - n_min)
+
 
     pyplot.show()
     pyplot.close()
