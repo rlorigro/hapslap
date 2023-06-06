@@ -22,9 +22,7 @@ def parse_region_string(s):
     return chromosome, start, stop
 
 
-def get_region(tsv_path, n_threads, samples, column_names, region_string, output_directory):
-    chromosome, start, stop = parse_region_string(region_string)
-
+def get_diploid_haplotypes_of_region(tsv_path, n_threads, samples, column_names, region_strings, output_directory):
     token = GoogleToken()
     index_threads = 1
 
@@ -44,56 +42,60 @@ def get_region(tsv_path, n_threads, samples, column_names, region_string, output
     if samples is not None:
         samples = set(samples)
 
-    for column_name in column_names:
-        for i in range(n_rows):
-            sample_name = df.iloc[i][0]
+    for region_string in region_strings:
+        chromosome, start, stop = parse_region_string(region_string)
 
-            if samples is not None and sample_name not in samples:
-                continue
+        for column_name in column_names:
+            for i in range(n_rows):
+                sample_name = df.iloc[i][0]
 
-            print(sample_name)
+                if samples is not None and sample_name not in samples:
+                    continue
 
-            gs_uri = df.iloc[i][column_name]
+                print(sample_name)
 
-            # Each tool downloads its regions to its own subdirectory to prevent overwriting (filenames are by region)
-            output_subdirectory = os.path.join(output_directory, sample_name)
-            if not os.path.exists(output_subdirectory):
-                os.makedirs(output_subdirectory)
+                gs_uri = df.iloc[i][column_name]
 
-            filename = sample_name + "_" + column_name + "_" + region_string.replace(":","_") + ".bam"
-            args.append([output_subdirectory,gs_uri,region_string,token,600,filename,True])
+                # Each sample downloads its regions to its own subdirectory to prevent overwriting (filenames are by region)
+                output_subdirectory = os.path.join(output_directory, sample_name)
 
-    with Pool(n_threads) as pool:
-        download_results = pool.starmap(get_region_from_bam, args)
+                if not os.path.exists(output_subdirectory):
+                    os.makedirs(output_subdirectory)
 
-    output_fasta = os.path.join(output_directory, "haplotypes" + "_" + region_string.replace(":","_") + ".fasta")
-    sequences = list()
+                filename = sample_name + "_" + column_name + "_" + region_string.replace(":","_") + ".bam"
+                args.append([output_subdirectory,gs_uri,region_string,token,600,filename])
 
-    with open(output_fasta, 'w') as file:
-        for path in download_results:
-            suffix = None
+        with Pool(n_threads) as pool:
+            download_results = pool.starmap(get_region_from_bam, args)
 
-            if "hap1" in path:
-                suffix = "hap1"
+        output_fasta = os.path.join(output_directory, "haplotypes" + "_" + region_string.replace(":","_") + ".fasta")
 
-            if "hap2" in path:
-                suffix = "hap2"
+        with open(output_fasta, 'w') as file:
+            for path in download_results:
+                print(path)
 
-            index_path = path + ".bai"
+                suffix = None
 
-            if not os.path.exists(index_path):
-                index_bam(path, index_threads)
+                if "hap1" in path:
+                    suffix = "hap1"
 
-            iter = iter_query_sequences_of_region(bam_path=path, chromosome=chromosome, ref_start=start, ref_stop=stop)
+                if "hap2" in path:
+                    suffix = "hap2"
 
-            for item in iter:
-                sequences.append(item)
+                print(suffix)
 
-        for query_name, is_reverse, query_start, query_stop, seq in sorted(sequences, key=lambda x: len(x[-1]), reverse=True):
-            file.write(">" + query_name + "_" + suffix)
-            file.write('\n')
-            file.write(seq)
-            file.write('\n')
+                index_path = path + ".bai"
+
+                if not os.path.exists(index_path):
+                    index_bam(path, index_threads)
+
+                iter = iter_query_sequences_of_region(bam_path=path, chromosome=chromosome, ref_start=start, ref_stop=stop)
+
+                for query_name, is_reverse, query_start, query_stop, seq in iter:
+                    file.write(">" + query_name + "_" + suffix)
+                    file.write('\n')
+                    file.write(seq)
+                    file.write('\n')
 
 
 if __name__ == "__main__":
@@ -132,8 +134,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "-r",
         required=True,
-        type=str,
-        help="SAMtools formatted region, e.g. chr1:2000-4000"
+        type=parse_comma_separated_string,
+        help="SAMtools formatted region, e.g. chr1:2000-4000, can be comma-separated for multiple regions"
     )
 
     parser.add_argument(
@@ -144,11 +146,11 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    get_region(
+    get_diploid_haplotypes_of_region(
         tsv_path=args.tsv,
         n_threads=args.t,
         samples=args.s,
         column_names=args.c,
-        region_string=args.r,
+        region_strings=args.r,
         output_directory=args.o
     )
