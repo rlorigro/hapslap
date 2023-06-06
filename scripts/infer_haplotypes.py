@@ -1,10 +1,12 @@
-import time
 from threading import Timer
+import time
+import math
 import sys
 
 from modules.IterativeHistogram import IterativeHistogram
 from modules.IncrementalIdMap import IncrementalIdMap
 from modules.Bam import get_region_from_bam
+from modules.Align import run_minimap2
 from modules.Authenticator import *
 from modules.Paths import Paths
 from modules.GsUri import *
@@ -260,13 +262,17 @@ class ObjectiveEarlyStopping(cp_model.CpSolverSolutionCallback):
     def _reset_timer(self):
         if self._timer:
             self._timer.cancel()
+
         self._timer = Timer(self._timer_limit, self.StopSearch)
         self._timer.start()
 
     def StopSearch(self):
         print(f"{self._timer_limit} seconds without improvement")
         super().StopSearch()
+        self._timer.cancel()
 
+    def cancel_timer_thread(self):
+        self._timer.cancel()
 
 class Variables:
     def __init__(self):
@@ -447,7 +453,7 @@ def optimize_with_cpsat(
     # solver.log_callback = print
 
     status = None
-    results = list()
+    results = dict()
 
     for i in range(1,max_feasible_haplotypes):
         print(i)
@@ -460,15 +466,23 @@ def optimize_with_cpsat(
             for var in vars.path_to_read.values():
                 model.AddHint(var, solver.Value(var))
 
-        status = solver.SolveWithSolutionCallback(model, ObjectiveEarlyStopping(60))
+        # It's critical to STOP THE TIMER after this finishes because it relies on a thread which will run on
+        # past the optimal solution for as long as the timer is set, potentially starving future iterations of threads.
+        o = ObjectiveEarlyStopping(60)
+        status = solver.SolveWithSolutionCallback(model, o)
+        o.cancel_timer_thread()
 
         print("=====Stats:======")
         print(solver.SolutionInfo())
         print(solver.ResponseStats())
 
-        results.append([i,vars.get_cache(status=status, solver=solver)])
+        results[i] = vars.get_cache(status=status, solver=solver)
 
-    for i,cache in results:
+        if len(results) > 1 and results[i].cost_a > results[i-1].cost_a:
+            sys.stderr.write("Iteration stopped at n=%d because score worsened\n" % i)
+            break
+
+    for i,cache in results.items():
         print("%d,%d" % (i, cache.cost_a))
         cache.write_results_to_file(output_dir=os.path.join(output_subdir,str(i)))
 
@@ -585,44 +599,6 @@ def get_read_names_from_bam(bam_path):
         read_names.append(alignment.query_name)
 
     return read_names
-
-
-# Requires samtools installed!
-def run_minimap2(ref_fasta_path, reads_fasta_path, preset, n_threads, n_sort_threads, output_directory, filename_prefix="reads_vs_ref"):
-    output_filename = os.path.join(output_directory, filename_prefix + ".bam")
-    output_path = os.path.join(output_directory,output_filename)
-
-    minimap_args = ["minimap2", "-a", "-x", preset, "--eqx", "-t", str(n_threads), ref_fasta_path, reads_fasta_path]
-    sort_args = ["samtools", "sort", "-", "-@", str(n_sort_threads), "-o", output_filename]
-
-    index_args = ["samtools", "index", output_filename]
-
-    with open(output_path, 'w') as file:
-        sys.stderr.write(" ".join(minimap_args)+'\n')
-        sys.stderr.write(" ".join(sort_args)+'\n')
-
-        p1 = subprocess.Popen(minimap_args, stdout=subprocess.PIPE, cwd=output_directory)
-        p2 = subprocess.Popen(sort_args, stdin=p1.stdout, stdout=file, cwd=output_directory)
-        p2.communicate()
-
-    success = (p2.returncode == 0)
-
-    if not success:
-        sys.stderr.write("ERROR: failed to align: %s to %s\n" % (reads_fasta_path, ref_fasta_path))
-        sys.stderr.flush()
-        return None
-
-    sys.stderr.write(" ".join(index_args)+'\n')
-
-    try:
-        p1 = subprocess.run(index_args, check=True, stderr=subprocess.PIPE)
-
-    except subprocess.CalledProcessError as e:
-        sys.stderr.write("Status: FAIL " + '\n' + (e.stderr.decode("utf8") if e.stderr is not None else "") + '\n')
-        sys.stderr.flush()
-        return None
-
-    return output_path
 
 
 def get_reads_from_bam(output_path, bam_path, token):
@@ -863,6 +839,9 @@ def main():
     # ref_start = 47474020
     # ref_stop = 47477018
 
+    # ref_start = 49404513
+    # ref_stop = 49404858
+
     # ref_start = 54974920
     # ref_stop = 54977307
 
@@ -872,14 +851,14 @@ def main():
     # ref_start = 55486867
     # ref_stop = 55492722
 
-    # ref_start = 18828383
-    # ref_stop = 18828733
+    ref_start = 18828383
+    ref_stop = 18828733
 
     # ref_start = 18689217
     # ref_stop = 18689256
 
-    ref_start = 18259924
-    ref_stop = 18261835
+    # ref_start = 18259924
+    # ref_stop = 18261835
 
     # ref_start = 10437604
     # ref_stop = 10440525
@@ -905,49 +884,49 @@ def main():
         "HG00438",
         "HG005",
         "HG00621",
-        # "HG00673",
-        # "HG00733",
-        # "HG00735",
-        # "HG00741",
-        # "HG01071",
-        # "HG01106",
-        # "HG01109",
-        # "HG01123",
-        # "HG01175",
-        # "HG01243",
-        # "HG01258",
-        # "HG01358",
-        # "HG01361",
-        # "HG01891",
-        # "HG01928",
-        # "HG01952",
-        # "HG01978",
-        # "HG02055",
-        # "HG02080",
-        # "HG02109",
-        # "HG02145",
-        # "HG02148",
-        # "HG02257",
-        # "HG02486",
-        # "HG02559",
-        # "HG02572",
-        # "HG02622",
-        # "HG02630",
-        # "HG02717",
-        # "HG02723",
-        # "HG02818",
-        # "HG02886",
-        # "HG03098",
-        # "HG03453",
-        # "HG03486",
-        # "HG03492",
-        # "HG03516",
-        # "HG03540",
-        # "HG03579",
-        # "NA18906",
-        # "NA19240",
-        # "NA20129",
-        # "NA21309"
+        "HG00673",
+        "HG00733",
+        "HG00735",
+        "HG00741",
+        "HG01071",
+        "HG01106",
+        "HG01109",
+        "HG01123",
+        "HG01175",
+        "HG01243",
+        "HG01258",
+        "HG01358",
+        "HG01361",
+        "HG01891",
+        "HG01928",
+        "HG01952",
+        "HG01978",
+        "HG02055",
+        "HG02080",
+        "HG02109",
+        "HG02145",
+        "HG02148",
+        "HG02257",
+        "HG02486",
+        "HG02559",
+        "HG02572",
+        "HG02622",
+        "HG02630",
+        "HG02717",
+        "HG02723",
+        "HG02818",
+        "HG02886",
+        "HG03098",
+        "HG03453",
+        "HG03486",
+        "HG03492",
+        "HG03516",
+        "HG03540",
+        "HG03579",
+        "NA18906",
+        "NA19240",
+        "NA20129",
+        "NA21309"
     ]
 
     data_per_sample = defaultdict(dict)
@@ -1210,23 +1189,67 @@ def main():
         output_dir=output_directory
     )
 
+    # TODO: replace this with average error rate per read?
+    c_target = 0
+
+    # TODO: replace this with regional heterozygosity estimate
+    n_target = 1
+
+    fig,axes = pyplot.subplots(nrows=1, ncols=2)
+
     c_min = sys.maxsize
     c_max = 0
-    n_min = None
-    n_max = None
-    for n,cache in results:
+    n_min = 1
+    n_max = len(sample_names)
+
+    for n,cache in results.items():
         if cache.cost_a < c_min:
-            min_edit_distance = cache.cost_a
-            n_min = n
+            c_min = cache.cost_a
 
         if cache.cost_a > c_max:
-            max_edit_distance = cache.cost_a
-            n_max = n
+            c_max = cache.cost_a
 
-    for n,cache in results:
-        c_norm = (float(cache.cost_a) - c_min) / float(c_max - c_min)
-        n_norm = (float(n) - n_min) / float(n_max - n_min)
+    print("n",n_min,n_max)
+    print("c",c_min,c_max)
 
+    d_min = sys.maxsize
+    n_min_distance = None
+    c_per_read_min_distance = None
+
+    for n,cache in results.items():
+        c_norm = float(cache.cost_a - c_min) / float(c_max - c_min) + 1
+        n_norm = (float(n) - n_min) / float(n_max - n_min) + 1
+
+        distance = math.sqrt((c_norm-c_target)**2 + (n_norm-n_target)**2)
+        if distance < d_min:
+            d_min = distance
+            n_min_distance = n
+            c_per_read_min_distance = float(cache.cost_a)/float(len(read_id_map))
+
+        axes[0].scatter(n, cache.cost_a, color="C0")
+        axes[1].scatter(n_norm, c_norm, color="C0")
+        axes[1].text(n_norm, c_norm, "%.4f" % distance)
+
+    best_result = results[n_min_distance]
+
+    sys.stderr.write("Best result: n=%d cost_per_read=%.2f distance=%.4f\n" % (n_min_distance,c_per_read_min_distance,d_min))
+
+    output_subdirectory = os.path.join(output_directory, "assigned_haplotypes")
+    if not os.path.exists(output_subdirectory):
+        os.makedirs(output_subdirectory)
+
+    counter = defaultdict(int)
+    for [path_id,sample_id],value in best_result.path_to_sample.items():
+        counter[path_id] += 1
+        sample_name = sample_id_map.get_name(sample_id)
+        output_path = os.path.join(output_subdirectory, sample_name) + "_" + str(counter[path_id]) + ".fasta"
+
+        with open(output_path, 'w') as file:
+            file.write(">" + sample_name)
+            file.write("\n")
+            for i in paths.get_path(path_id):
+                file.write("%s" % alleles[i].sequence)
+            file.write("\n")
 
     pyplot.show()
     pyplot.close()

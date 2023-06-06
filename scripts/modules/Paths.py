@@ -33,6 +33,12 @@ class Paths:
         else:
             self.add_path(path, weight)
 
+    def get_path(self, path_id: int):
+        if self.has_path(path_id):
+            return self.id_to_path[path_id]
+        else:
+            raise Exception("ERROR: path ID %d not in paths"% path_id)
+
     def has_path(self, path):
         has_path = None
 

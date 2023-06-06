@@ -41,12 +41,14 @@ def get_region(tsv_path, n_threads, samples, column_names, region_string, output
 
     args = list()
 
-    samples = set(samples)
+    if samples is not None:
+        samples = set(samples)
+
     for column_name in column_names:
         for i in range(n_rows):
             sample_name = df.iloc[i][0]
 
-            if sample_name not in samples:
+            if samples is not None and sample_name not in samples:
                 continue
 
             print(sample_name)
@@ -114,9 +116,10 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "-s",
-        required=True,
+        required=False,
+        default=None,
         type=parse_comma_separated_string,
-        help="Which samples to download, as a comma separated list"
+        help="Which samples to download, as a comma separated list, if not specified, defaults to all samples in TSV"
     )
 
     parser.add_argument(
@@ -130,7 +133,7 @@ if __name__ == "__main__":
         "-r",
         required=True,
         type=str,
-        help="SAMtools formatted region, e.g. chr1:2000-4000 "
+        help="SAMtools formatted region, e.g. chr1:2000-4000"
     )
 
     parser.add_argument(
