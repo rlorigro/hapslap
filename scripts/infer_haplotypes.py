@@ -489,7 +489,9 @@ def optimize_with_cpsat(
     return results
 
 
-def enumerate_paths_using_alignments(paths: Paths, graph: DiGraph, alleles, gaf_path, ref_sample_name, output_directory):
+def enumerate_paths_using_alignments(graph: DiGraph, alleles, gaf_path, ref_sample_name, output_directory, min_coverage):
+    paths = Paths()
+
     start_node = None
     stop_node = None
 
@@ -519,6 +521,14 @@ def enumerate_paths_using_alignments(paths: Paths, graph: DiGraph, alleles, gaf_
             if len(path) > 1 and path[0] == start_node and path[-1] == stop_node:
                 paths.increment_weight(path,1)
 
+    filtered_paths = Paths()
+
+    for p,path,frequency in paths:
+        if frequency >= min_coverage:
+            filtered_paths.add_path(path,frequency)
+
+    paths = filtered_paths
+
     # Write one sequence per FASTA so that all reads can be aligned to each independently
     output_paths = list()
     csv_path = os.path.join(output_directory, "paths.csv")
@@ -539,7 +549,7 @@ def enumerate_paths_using_alignments(paths: Paths, graph: DiGraph, alleles, gaf_
                     file.write("%s" % alleles[i].sequence)
                 file.write("\n")
 
-    return output_paths
+    return paths, output_paths
 
 
 def update_edge_weights_using_alignments(alleles, gaf_path, ref_sample_name, graph: DiGraph, min_width=0.5, max_width=5.0):
@@ -681,7 +691,7 @@ def enumerate_paths(alleles, graph, output_directory):
             file.write('\n')
 
 
-def vcf_to_graph(ref_path, vcf_paths, chromosome, ref_start, ref_stop, ref_sample_name, padding=20000):
+def vcf_to_graph(ref_path, vcf_paths, chromosome, ref_start, ref_stop, ref_sample_name, flank_length):
     region_string = chromosome + ":" + str(ref_start) + "-" + str(ref_stop)
 
     ref_sequence = FastaFile(ref_path).fetch("chr20")
@@ -751,8 +761,8 @@ def vcf_to_graph(ref_path, vcf_paths, chromosome, ref_start, ref_stop, ref_sampl
 
                         alleles[h].add_sample(sample_name)
 
-    ref_start -= padding
-    ref_stop += padding
+    ref_start -= flank_length
+    ref_stop += flank_length
 
     print()
 
@@ -830,45 +840,17 @@ def vcf_to_graph(ref_path, vcf_paths, chromosome, ref_start, ref_stop, ref_sampl
     return graph, alleles
 
 
-def main():
+def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
     n_threads = 30
     n_sort_threads = 4
+    flank_length = 20000
 
-    chromosome = "chr20"
-
-    # ref_start = 47474020
-    # ref_stop = 47477018
-
-    # ref_start = 49404513
-    # ref_stop = 49404858
-
-    # ref_start = 54974920
-    # ref_stop = 54977307
-
-    # ref_start = 55000754
-    # ref_stop = 55000852
-
-    # ref_start = 55486867
-    # ref_stop = 55492722
-
-    ref_start = 18828383
-    ref_stop = 18828733
-
-    # ref_start = 18689217
-    # ref_stop = 18689256
-
-    # ref_start = 18259924
-    # ref_stop = 18261835
-
-    # ref_start = 10437604
-    # ref_stop = 10440525
-
-    # ref_start = 7901320
-    # ref_stop = 7901444
+    # Used by initial minigraph alignment to select paths for the optimizer to cover
+    min_coverage = 3
 
     region_string = chromosome + ":" + str(ref_start) + "-" + str(ref_stop)
 
-    output_directory = os.path.join("/home/ryan/data/test_hapslap/", region_string.replace(':',"_"))
+    output_directory = os.path.join("/home/ryan/data/test_hapslap/results", region_string.replace(':',"_"))
 
     if not os.path.exists(output_directory):
         os.makedirs(output_directory)
@@ -878,56 +860,6 @@ def main():
     ref_path = "/home/ryan/data/human/reference/chm13v2.0.fa"
 
     input_directory = "/home/ryan/code/hapslap/data/test/hprc/"
-
-    sample_names = [
-        "HG002",
-        "HG00438",
-        "HG005",
-        "HG00621",
-        "HG00673",
-        "HG00733",
-        "HG00735",
-        "HG00741",
-        "HG01071",
-        "HG01106",
-        "HG01109",
-        "HG01123",
-        "HG01175",
-        "HG01243",
-        "HG01258",
-        "HG01358",
-        "HG01361",
-        "HG01891",
-        "HG01928",
-        "HG01952",
-        "HG01978",
-        "HG02055",
-        "HG02080",
-        "HG02109",
-        "HG02145",
-        "HG02148",
-        "HG02257",
-        "HG02486",
-        "HG02559",
-        "HG02572",
-        "HG02622",
-        "HG02630",
-        "HG02717",
-        "HG02723",
-        "HG02818",
-        "HG02886",
-        "HG03098",
-        "HG03453",
-        "HG03486",
-        "HG03492",
-        "HG03516",
-        "HG03540",
-        "HG03579",
-        "NA18906",
-        "NA19240",
-        "NA20129",
-        "NA21309"
-    ]
 
     data_per_sample = defaultdict(dict)
 
@@ -975,7 +907,8 @@ def main():
         chromosome=chromosome,
         ref_start=ref_start,
         ref_stop=ref_stop,
-        ref_sample_name=ref_sample_name)
+        ref_sample_name=ref_sample_name,
+        flank_length=flank_length)
 
     ref_id_offset = None
     for i in range(len(alleles)):
@@ -1101,13 +1034,16 @@ def main():
 
     paths = Paths()
 
-    fasta_paths = enumerate_paths_using_alignments(
-        paths=paths,
+    paths, fasta_paths = enumerate_paths_using_alignments(
         graph=graph,
         alleles=alleles,
         gaf_path=output_gaf_path,
         ref_sample_name=ref_sample_name,
-        output_directory=path_subdirectory)
+        output_directory=path_subdirectory,
+        min_coverage=min_coverage
+    )
+
+    sys.stderr.write("Optimizing using %d paths with min coverage %d\n" % (len(paths), min_coverage))
 
     bam_paths = list()
     for p,path in enumerate(fasta_paths):
@@ -1193,66 +1129,220 @@ def main():
     c_target = 0
 
     # TODO: replace this with regional heterozygosity estimate
-    n_target = 1
+    n_target = 0
 
-    fig,axes = pyplot.subplots(nrows=1, ncols=2)
+    histogram_path = os.path.join(output_directory, "path_global_score_histogram.png")
 
-    c_min = sys.maxsize
-    c_max = 0
-    n_min = 1
-    n_max = len(sample_names)
+    pyplot.savefig(histogram_path, dpi=200)
+    pyplot.close('all')
+
+    fig,axes = pyplot.subplots(nrows=1, ncols=1)
+
+    c_start = sys.maxsize
+    c_stop = 0
+    n_start = 1
+    n_stop = len(sample_names)
 
     for n,cache in results.items():
-        if cache.cost_a < c_min:
-            c_min = cache.cost_a
+        if cache.cost_a < c_start:
+            c_start = cache.cost_a
 
-        if cache.cost_a > c_max:
-            c_max = cache.cost_a
+        if cache.cost_a > c_stop:
+            c_stop = cache.cost_a
 
-    print("n",n_min,n_max)
-    print("c",c_min,c_max)
+    print("n",n_start,n_stop)
+    print("c",c_start,c_stop)
 
     d_min = sys.maxsize
-    n_min_distance = None
-    c_per_read_min_distance = None
+    c_min = None
+    n_min = None
+    c_per_read_min = None
+    n_norm_min = None
+    c_norm_min = None
 
     for n,cache in results.items():
-        c_norm = float(cache.cost_a - c_min) / float(c_max - c_min) + 1
-        n_norm = (float(n) - n_min) / float(n_max - n_min) + 1
+        c_norm = float(cache.cost_a - c_start) / float(c_stop - c_start) + 1
+        n_norm = (float(n) - n_start) / float(n_stop - n_start) + 0.001
 
         distance = math.sqrt((c_norm-c_target)**2 + (n_norm-n_target)**2)
         if distance < d_min:
             d_min = distance
-            n_min_distance = n
-            c_per_read_min_distance = float(cache.cost_a)/float(len(read_id_map))
+            n_min = n
+            c_per_read_min = float(cache.cost_a)/float(len(read_id_map))
+            c_min = cache.cost_a
 
-        axes[0].scatter(n, cache.cost_a, color="C0")
-        axes[1].scatter(n_norm, c_norm, color="C0")
-        axes[1].text(n_norm, c_norm, "%.4f" % distance)
+            # For plotting
+            n_norm_min = n_norm
+            c_norm_min = c_norm
 
-    best_result = results[n_min_distance]
+        # axes[0].scatter(n, cache.cost_a, color="C0")
+        axes.scatter(n_norm, c_norm, color="C0")
+        axes.plot([n_target,n_norm], [c_target,c_norm], color="gray")
+        axes.text(n_norm, c_norm, "%.4f" % distance)
 
-    sys.stderr.write("Best result: n=%d cost_per_read=%.2f distance=%.4f\n" % (n_min_distance,c_per_read_min_distance,d_min))
+    best_result = results[n_min]
 
-    output_subdirectory = os.path.join(output_directory, "assigned_haplotypes")
-    if not os.path.exists(output_subdirectory):
-        os.makedirs(output_subdirectory)
+    # axes[0].plot(n_min, c_min, color="C1", marker='o', markerfacecolor='none', markersize=6)
+    # axes[0].text(n_min, c_min, "n=%d" % n_min, color="red", ha='right', va='top')
+
+    axes.plot(n_norm_min, c_norm_min, color="C1", marker='o', markerfacecolor='none', markersize=6)
+    axes.text(n_norm_min, c_norm_min, "n=%d" % n_min, color="red", ha='right', va='top')
+
+    # axes.set_aspect('equal', 'box')
+    axes.set_title("Results for %s" % region_string)
+    axes.set_xlabel("n_norm")
+    axes.set_ylabel("c_norm")
+
+    summary_string = "n,%d\ncost_per_read,%.2f\ndistance,%.4f\n" % (n_min,c_per_read_min,d_min)
+    sys.stderr.write(summary_string)
+
+    summary_path = os.path.join(output_directory, "summary.txt")
+    with open(summary_path, 'w') as file:
+        file.write(summary_string)
 
     counter = defaultdict(int)
-    for [path_id,sample_id],value in best_result.path_to_sample.items():
-        counter[path_id] += 1
-        sample_name = sample_id_map.get_name(sample_id)
-        output_path = os.path.join(output_subdirectory, sample_name) + "_" + str(counter[path_id]) + ".fasta"
 
-        with open(output_path, 'w') as file:
-            file.write(">" + sample_name)
+
+    # Get start and stop nodes
+    start_node = None
+    stop_node = None
+
+    for n in graph.nodes():
+        if ref_sample_name in alleles[n].samples:
+            if len(graph.in_edges(n)) == 0:
+                start_node = n
+            if len(graph.out_edges(n)) == 0:
+                stop_node = n
+
+    print("Trimming start and stop nodes: %d %d " % (start_node,stop_node))
+    # Trim flanks off the allele sequences
+    s_start = alleles[start_node].sequence
+    l_start = len(s_start)
+    s_start = s_start[flank_length:]
+
+    s_stop = alleles[stop_node].sequence
+    l_stop = len(s_stop)
+    s_stop = s_stop[:(l_stop - flank_length)]
+
+    print("before trimming: ", l_start)
+    print("after trimming: ", len(s_start))
+    print("before trimming: ", l_stop)
+    print("after trimming: ", len(s_stop))
+
+    alleles[start_node].sequence = s_start
+    alleles[stop_node].sequence = s_stop
+
+    assigned_haplotypes_path = os.path.join(output_directory, "assigned_haplotypes.fasta")
+    with open(assigned_haplotypes_path, 'w') as file:
+        for [path_id,sample_id],value in best_result.path_to_sample.items():
+            # Only consider combinations of path/sample that were actually assigned by the optimizer
+            if value == 0:
+                continue
+
+            counter[sample_id] += 1
+            sample_name = sample_id_map.get_name(sample_id)
+            sequence_name = sample_name + "_" + str(counter[sample_id])
+
+            file.write(">" + sequence_name)
             file.write("\n")
             for i in paths.get_path(path_id):
-                file.write("%s" % alleles[i].sequence)
+                print(i, len(alleles[i].sequence))
+                file.write(alleles[i].sequence)
+
             file.write("\n")
 
-    pyplot.show()
+    optimizer_results_path = os.path.join(output_directory, "optimizer_results.png")
+    pyplot.savefig(optimizer_results_path, dpi=200)
+
+    # pyplot.show()
     pyplot.close()
+
+    return summary_string
+
+
+def main():
+
+    sample_names = [
+        "HG002",
+        "HG00438",
+        "HG005",
+        "HG00621",
+        "HG00673",
+        "HG00733",
+        "HG00735",
+        "HG00741",
+        "HG01071",
+        "HG01106",
+        "HG01109",
+        "HG01123",
+        "HG01175",
+        "HG01243",
+        "HG01258",
+        "HG01358",
+        "HG01361",
+        "HG01891",
+        "HG01928",
+        "HG01952",
+        "HG01978",
+        "HG02055",
+        "HG02080",
+        "HG02109",
+        "HG02145",
+        "HG02148",
+        "HG02257",
+        "HG02486",
+        "HG02559",
+        "HG02572",
+        "HG02622",
+        "HG02630",
+        "HG02717",
+        "HG02723",
+        "HG02818",
+        "HG02886",
+        "HG03098",
+        "HG03453",
+        "HG03486",
+        "HG03492",
+        "HG03516",
+        "HG03540",
+        "HG03579",
+        "NA18906",
+        "NA19240",
+        "NA20129",
+        "NA21309"
+    ]
+
+    chromosome = "chr20"
+
+    coords = [
+        [10437604,10440525],
+        [18259924,18261835],
+        # [54975152,54976857], # Nightmare region (tandem)
+        [18689217,18689256],
+        [18828383,18828733],
+        [47475093,47475817],
+        [49404497,49404943],
+        [55000754,55000852],
+        [55486867,55492722],
+        [7901318,7901522]
+    ]
+
+    summary_strings = list()
+    for ref_start, ref_stop in coords:
+        summary_string = infer_haplotypes(
+            chromosome=chromosome,
+            ref_start=ref_start,
+            ref_stop=ref_stop,
+            sample_names=sample_names
+        )
+
+        summary_strings.append(summary_string)
+
+    for s in range(len(summary_strings)):
+        sys.stderr.write(str(coords[s]))
+        sys.stderr.write('\n')
+        sys.stderr.write(summary_strings[s])
+
 
 
 if __name__ == "__main__":
