@@ -36,6 +36,8 @@ class Allele:
         self.stop = int(stop)
         self.sequence = sequence
         self.samples = set()
+        self.is_left_flank = False
+        self.is_right_flank = False
 
     def add_sample(self, s):
         self.samples.add(s)
@@ -489,25 +491,13 @@ def optimize_with_cpsat(
     return results
 
 
-def enumerate_paths_using_alignments(graph: DiGraph, alleles, gaf_path, ref_sample_name, output_directory, min_coverage):
-    paths = Paths()
-
-    start_node = None
-    stop_node = None
-
-    # For this implementation we enforce that reads must span the full graph, so start and end ref nodes are needed.
-    # TODO: A smarter implementation might allow partial walks to be extended using all walks from a sample.
-    # But it would need to be capable of aborting intractable traversals as a result of too many walks
-    for n in graph.nodes():
-        if ref_sample_name in alleles[n].samples:
-            if len(graph.in_edges(n)) == 0:
-                start_node = n
-            if len(graph.out_edges(n)) == 0:
-                stop_node = n
+def get_spanning_reads(alleles, gaf_path):
+    spanning_reads = set()
 
     with open(gaf_path, 'r') as file:
         for l,line in enumerate(file):
             tokens = line.strip().split('\t')
+            read_name = tokens[0]
 
             # Column 5 (0-based) is the path column in a GAF file
             # It can be a forward or reverse alignment, so we will reinterpret them all as forward alignments
@@ -518,7 +508,38 @@ def enumerate_paths_using_alignments(graph: DiGraph, alleles, gaf_path, ref_samp
             if tokens[5][0] == '<':
                 path = tuple(map(int,reversed(re.findall(r'\d+', tokens[5]))))
 
-            if len(path) > 1 and path[0] == start_node and path[-1] == stop_node:
+            if len(path) > 1 and alleles[path[0]].is_left_flank and alleles[path[-1]].is_right_flank:
+                spanning_reads.add(read_name)
+
+    return spanning_reads
+
+
+def enumerate_paths_using_alignments(alleles, gaf_path: str, output_directory: str, min_coverage: int, read_subset: set=None):
+    paths = Paths()
+
+    with open(gaf_path, 'r') as file:
+        for l,line in enumerate(file):
+            tokens = line.strip().split('\t')
+            read_name = tokens[0]
+
+            if read_subset is not None and read_name not in read_subset:
+                print("skipping read: " + read_name)
+                continue
+
+            # Column 5 (0-based) is the path column in a GAF file
+            # It can be a forward or reverse alignment, so we will reinterpret them all as forward alignments
+            path = None
+            if tokens[5][0] == '>':
+                path = tuple(map(int,re.findall(r'\d+', tokens[5])))
+
+            elif tokens[5][0] == '<':
+                path = tuple(map(int,reversed(re.findall(r'\d+', tokens[5]))))
+
+            else:
+                print(tokens[5])
+                raise Exception("ERROR: Non GFA character found in path column of GFA")
+
+            if len(path) > 1 and alleles[path[0]].is_left_flank and alleles[path[-1]].is_right_flank:
                 paths.increment_weight(path,1)
 
     filtered_paths = Paths()
@@ -526,6 +547,7 @@ def enumerate_paths_using_alignments(graph: DiGraph, alleles, gaf_path, ref_samp
     for p,path,frequency in paths:
         if frequency >= min_coverage:
             filtered_paths.add_path(path,frequency)
+            print(path)
 
     paths = filtered_paths
 
@@ -549,23 +571,13 @@ def enumerate_paths_using_alignments(graph: DiGraph, alleles, gaf_path, ref_samp
                     file.write("%s" % alleles[i].sequence)
                 file.write("\n")
 
+    if len(paths) == 0:
+        raise Exception("ERROR: no passing paths in alignment graph")
+
     return paths, output_paths
 
 
-def update_edge_weights_using_alignments(alleles, gaf_path, ref_sample_name, graph: DiGraph, min_width=0.5, max_width=5.0):
-    start_node = None
-    stop_node = None
-
-    # For this implementation we enforce that reads must span the full graph, so start and end ref nodes are needed.
-    # TODO: A smarter implementation might allow partial walks to be extended using all walks from a sample.
-    # But it would need to be capable of aborting intractable traversals as a result of too many walks
-    for n in graph.nodes():
-        if ref_sample_name in alleles[n].samples:
-            if len(graph.in_edges(n)) == 0:
-                start_node = n
-            if len(graph.out_edges(n)) == 0:
-                stop_node = n
-
+def update_edge_weights_using_alignments(alleles, gaf_path, graph: DiGraph, min_width=0.5, max_width=5.0):
     max_weight = 0.0
 
     with open(gaf_path, 'r') as file:
@@ -575,7 +587,7 @@ def update_edge_weights_using_alignments(alleles, gaf_path, ref_sample_name, gra
             path = tuple(map(int,re.findall(r'\d+', tokens[5])))
 
             # Only count spanning reads
-            if not (len(path) > 1 and path[0] == start_node and path[-1] == stop_node):
+            if not (len(path) > 1 and alleles[path[0]].is_left_flank and alleles[path[-1]].is_right_flank):
                 continue
 
             for i in range(len(path) - 1):
@@ -674,7 +686,12 @@ def path_recursion(graph, alleles, id, path_sequence=None):
 
 
 def enumerate_paths(alleles, graph, output_directory):
-    start_id = next(networkx.topological_sort(graph))
+    # Get start node
+    start_id = None
+
+    for i in range(len(alleles)):
+        if alleles[i].is_left_flank:
+            start_id = i
 
     print("Starting path recursion from %d" % start_id)
 
@@ -743,6 +760,12 @@ def vcf_to_graph(ref_path, vcf_paths, chromosome, ref_start, ref_stop, ref_sampl
                         start = int(record.start)
                         stop = start + l + int(not_insert)
                         sequence = str(record.alleles[allele_index])
+
+                        # Occasionally the region can be cut wrong, e.g. directly through a deletion variant,
+                        # which means that the graph will contain edges in the flanking regions, which will
+                        # be deleted at the end to generate haplotypes... causing issues
+                        if ref_stop < start < ref_start or ref_stop < stop < ref_start:
+                            raise Exception("ERROR: VCF allele with coords %d-%d extends out of region %s:%d-%d" % (start,stop,chromosome,ref_start,ref_stop))
 
                         if sequence.strip() == "<DUP>":
                             sequence = ref_sequence[start:start+b_length+1]
@@ -815,6 +838,10 @@ def vcf_to_graph(ref_path, vcf_paths, chromosome, ref_start, ref_stop, ref_sampl
         prev_coord = coord
         r += 1
 
+    # Annotate the ref alleles with flanking information
+    alleles[ref_id_offset].is_left_flank = True
+    alleles[-1].is_right_flank = True
+
     # Construct edges from reference backbone to existing alleles and other backbone nodes
     r = ref_id_offset
     for i,[coord,edges] in enumerate(ref_edges):
@@ -846,7 +873,7 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
     flank_length = 20000
 
     # Used by initial minigraph alignment to select paths for the optimizer to cover
-    min_coverage = 3
+    min_coverage = 2
 
     region_string = chromosome + ":" + str(ref_start) + "-" + str(ref_stop)
 
@@ -1016,7 +1043,6 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
     update_edge_weights_using_alignments(
         alleles=alleles,
         gaf_path=output_gaf_path,
-        ref_sample_name=ref_sample_name,
         graph=graph)
 
     plot_path = os.path.join(output_directory, "dag_aligned.png")
@@ -1034,13 +1060,17 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
 
     paths = Paths()
 
-    paths, fasta_paths = enumerate_paths_using_alignments(
-        graph=graph,
+    spanning_reads = get_spanning_reads(
         alleles=alleles,
         gaf_path=output_gaf_path,
-        ref_sample_name=ref_sample_name,
+    )
+
+    paths, fasta_paths = enumerate_paths_using_alignments(
+        alleles=alleles,
+        gaf_path=output_gaf_path,
         output_directory=path_subdirectory,
-        min_coverage=min_coverage
+        min_coverage=min_coverage,
+        read_subset=spanning_reads
     )
 
     sys.stderr.write("Optimizing using %d paths with min coverage %d\n" % (len(paths), min_coverage))
@@ -1070,16 +1100,26 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
 
     # Because of the potential for supplementary alignments, need to first aggregate costs per read
     for bam_path in bam_paths:
+        sys.stderr.write(bam_path)
+        sys.stderr.write('\n')
+
         bam = pysam.AlignmentFile(bam_path, 'rb')
 
         total = 0.0
         n = 0.0
         for alignment in bam:
-            # TODO: verify that the NM tag is not double-counting softclips/hardclips in a supplementary alignment?
+            read_name = alignment.query_name
+
+            # TODO: [optimize] eventually alignment should be done in memory, and this filtering step could be performed
+            # before aligning the reads with minimap2, which would save (potentially considerable) time
+            if read_name not in spanning_reads:
+                continue
+
+            read_id = read_id_map.add(read_name)
+
+            # TODO: [fix] verify that the NM tag is not double-counting softclips/hardclips in a supplementary alignment?
             path_name = bam.header.get_reference_name(alignment.reference_id)
             path_id = paths.get_path_id(path_name)
-            read_name = alignment.query_name
-            read_id = read_id_map.add(read_name)
 
             # TODO: more filtering? possible to have unmapped reads?
             if not alignment.is_secondary:
@@ -1202,17 +1242,16 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
 
     counter = defaultdict(int)
 
-
     # Get start and stop nodes
     start_node = None
     stop_node = None
 
-    for n in graph.nodes():
-        if ref_sample_name in alleles[n].samples:
-            if len(graph.in_edges(n)) == 0:
-                start_node = n
-            if len(graph.out_edges(n)) == 0:
-                stop_node = n
+    for i in range(len(alleles)):
+        if alleles[i].is_left_flank:
+            start_node = i
+
+        if alleles[i].is_right_flank:
+            stop_node = i
 
     print("Trimming start and stop nodes: %d %d " % (start_node,stop_node))
     # Trim flanks off the allele sequences
@@ -1315,16 +1354,16 @@ def main():
     chromosome = "chr20"
 
     coords = [
-        [10437604,10440525],
-        [18259924,18261835],
+        # [10437604,10440525],
+        # [18259924,18261835],
         # [54975152,54976857], # Nightmare region (tandem)
-        [18689217,18689256],
-        [18828383,18828733],
-        [47475093,47475817],
-        [49404497,49404943],
-        [55000754,55000852],
+        # [18689217,18689256],
+        # [18828383,18828733],
+        # [47475093,47475817],
+        # [49404497,49404943],
+        # [55000754,55000852],
         [55486867,55492722],
-        [7901318,7901522]
+        # [7901318,7901522]
     ]
 
     summary_strings = list()
@@ -1342,7 +1381,6 @@ def main():
         sys.stderr.write(str(coords[s]))
         sys.stderr.write('\n')
         sys.stderr.write(summary_strings[s])
-
 
 
 if __name__ == "__main__":
