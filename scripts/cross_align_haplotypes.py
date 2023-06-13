@@ -13,12 +13,19 @@ import glob
 import os
 import re
 
-from matplotlib import pyplot
+from matplotlib import pyplot,colors
 from edlib import align
 import networkx
 
 import matplotlib
 matplotlib.use('Agg')
+
+
+def truncate_colormap(cmap, minval=0.0, maxval=1.0, n=100):
+    new_cmap = colors.LinearSegmentedColormap.from_list(
+        'trunc({n},{a:.2f},{b:.2f})'.format(n=cmap.name, a=minval, b=maxval),
+        cmap(numpy.linspace(minval, maxval, n)))
+    return new_cmap
 
 
 class Sequence:
@@ -178,10 +185,10 @@ def main():
         os.makedirs(output_dir)
 
     paths = [
-        # ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_7901318-7901522.fasta","/home/ryan/data/test_hapslap/results/chr20_7901318-7901522/assigned_haplotypes.fasta"],
+        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_7901318-7901522.fasta","/home/ryan/data/test_hapslap/results/chr20_7901318-7901522/assigned_haplotypes.fasta"],
         # ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_10437604-10440525.fasta","/home/ryan/data/test_hapslap/results/chr20_10437604-10440525/assigned_haplotypes.fasta"],
         # ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_18259924-18261835.fasta","/home/ryan/data/test_hapslap/results/chr20_18259924-18261835/assigned_haplotypes.fasta"],
-        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_18689217-18689256.fasta","/home/ryan/data/test_hapslap/results/chr20_18689217-18689256/assigned_haplotypes.fasta"],
+        # ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_18689217-18689256.fasta","/home/ryan/data/test_hapslap/results/chr20_18689217-18689256/assigned_haplotypes.fasta"],
         # ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_18828383-18828733.fasta","/home/ryan/data/test_hapslap/results/chr20_18828383-18828733/assigned_haplotypes.fasta"],
         # ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_47475093-47475817.fasta","/home/ryan/data/test_hapslap/results/chr20_47475093-47475817/assigned_haplotypes.fasta"],
         # ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_49404497-49404943.fasta","/home/ryan/data/test_hapslap/results/chr20_49404497-49404943/assigned_haplotypes.fasta"],
@@ -192,6 +199,8 @@ def main():
     n_threads = 30
 
     # paths = glob.glob(path + "*.fasta")
+
+    distance_threshold = 20
 
     for ref_path,test_path in paths:
         print(ref_path)
@@ -245,7 +254,7 @@ def main():
             if id_b not in graph:
                 graph.add_node(id_b)
 
-            if d <= 25:
+            if d <= distance_threshold:
                 graph.add_edge(id_a, id_b, weight=w)
 
         labels = dict()
@@ -257,12 +266,17 @@ def main():
 
         components = list(networkx.connected_components(graph))
 
-        colormap = pyplot.get_cmap("rainbow",len(components))
+        colormap = pyplot.get_cmap("rainbow")
+        colormap = truncate_colormap(colormap, 0, 0.7, 100)
 
         component_map = dict()
         colors = dict()
         for c,component in enumerate(components):
-            color = colormap(float(c)/float(len(components)))
+            print(float(c),float(len(components)))
+            color_index = float(c+0.001)/float(len(components))
+            print(color_index)
+
+            color = colormap(color_index)
             print(c,[id_map.get_name(id) for id in component])
             print('\t',color)
 
@@ -340,6 +354,14 @@ def main():
                 w = float(l_ref + l_test - d) / float(l_ref + l_test)
                 matrix[id_to_cluster_map[id_ref]][id_to_cluster_map[id_test]] = d
 
+                id_test += len(id_map)
+
+                if id_test not in graph:
+                    graph.add_node(id_test)
+
+                if d <= distance_threshold:
+                    graph.add_edge(id_ref, id_test, weight=w)
+
                 # file.write(','.join([name_ref,str(id_ref),str(l_ref),name_test,str(id_test),str(l_test),str(d)]))
                 # file.write('\n')
                 # file.write(pairs[i][0].sequence)
@@ -357,6 +379,21 @@ def main():
 
         # sums = numpy.sum(matrix, axis=1)
         # matrix /= sums
+
+        fig = pyplot.figure()
+        axes = pyplot.axes()
+
+        for i in range(len(graph.nodes)- len(id_map)) :
+            colors_list.append("red")
+
+        pos = networkx.spring_layout(graph, weight='weight')
+        # pos = networkx.spectral_layout(graph, weight='weight')
+
+        networkx.draw(graph,pos,alpha=0.6,node_color=colors_list,linewidths=0,width=0.5,node_size=20)
+
+        output_path = os.path.join(output_dir,os.path.basename(ref_path).replace(".fasta", "_graph_with_test_sequence.png"))
+        fig.savefig(output_path, dpi=200, bbox_inches='tight')
+        pyplot.close('all')
 
         fig = pyplot.figure()
         axes = pyplot.axes()
