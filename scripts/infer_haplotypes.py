@@ -3,6 +3,7 @@ import time
 import math
 import sys
 
+from modules.Cigar import iterate_cigar,cigar_index_to_char
 from modules.IterativeHistogram import IterativeHistogram
 from modules.IncrementalIdMap import IncrementalIdMap
 from modules.Bam import get_region_from_bam
@@ -11,7 +12,7 @@ from modules.Authenticator import *
 from modules.Paths import Paths
 from modules.GsUri import *
 
-from collections import defaultdict
+from collections import defaultdict,Counter
 from multiprocessing import Pool
 from copy import deepcopy,copy
 import subprocess
@@ -28,6 +29,7 @@ from vcf import VCFReader
 import networkx
 import numpy
 import pysam
+
 
 
 class Allele:
@@ -377,10 +379,110 @@ class Variables:
         with open(output_path, 'w') as file:
             file.write(self.response_stats)
 
+    """
+    There may be issues with the model which lead it to be infeasible, and CPSAT does not indicate why, so this method
+    is a pre-optimizer check
+    """
+    def validate(
+            self,
+            sample_id_to_read_ids: dict,
+            sample_id_map: IncrementalIdMap,
+            path_to_read_costs: dict):
+
+        # First get the reverse map so we can find the sample of each read
+        read_id_to_sample_id = dict()
+        for sample_id,read_ids in sample_id_to_read_ids.items():
+            for read_id in read_ids:
+                read_id_to_sample_id[read_id] = sample_id
+
+        passing_samples = set()
+        paths_covered_per_sample = defaultdict(set)
+
+        # Iterate all path-read pairs and update the sample-level filter
+        for (path_id,read_id) in path_to_read_costs:
+            sample_id = read_id_to_sample_id[read_id]
+            passing_samples.add(sample_id)
+            paths_covered_per_sample[sample_id].add(path_id)
+
+        obligatory_paths = set()
+        for sample,paths in paths_covered_per_sample.items():
+            if len(paths) == 1:
+                obligatory_paths.union(paths)
+
+        if len(obligatory_paths) > 1:
+            raise Exception("n <= %d infeasible for model because %d samples have non-overlapping "
+                            "obligatory paths (no other choices). Paths are: %s" % (len(obligatory_paths), len(obligatory_paths), str(obligatory_paths)))
+
+        all_pass = True
+        for id,sample in sample_id_map:
+            if id not in passing_samples:
+                sys.stderr.write("ERROR: sample has no valid path assignments: " + sample)
+                sys.stderr.write("\n")
+                all_pass = False
+
+        if not all_pass:
+            sys.stderr.write("WARNING: Not all samples have valid reads-to-path alignments (spanning)")
+            sys.stderr.write("\n")
+
+    def get_genotype_support(
+            self,
+            paths: Paths,
+            sample_id_to_read_ids: dict,
+            sample_id_map: IncrementalIdMap,
+            read_id_map: IncrementalIdMap):
+
+        # Nested map of sample: path: reads
+        # There will only ever be 2 paths per sample, but any number of reads can be assigned to each path,
+        # so this datastructure shows the reads that were assigned to each path for each sample, for the purpose of
+        # evaluating genotypes
+        genotype_support = defaultdict(lambda: defaultdict(list))
+
+        # First get the reverse map so we can find the sample of each read
+        read_id_to_sample_id = dict()
+        for sample_id,read_ids in sample_id_to_read_ids.items():
+            for read_id in read_ids:
+                read_id_to_sample_id[read_id] = sample_id
+
+        # Iterate all path,read pairs and build the coverage_per_sample nested map
+        for (path_id,read_id),value in self.path_to_read.items():
+            if value == 1:
+                sample_id = read_id_to_sample_id[read_id]
+
+                sample_name = sample_id_map.get_name(sample_id)
+                read_name = read_id_map.get_name(read_id)
+                path_name = paths.get_path_name(path_id)
+
+                genotype_support[sample_name][path_name].append(read_name)
+
+        return genotype_support
+
+    def write_genotype_support_to_file(
+            self,
+            output_path: str,
+            paths: Paths,
+            sample_id_to_read_ids: dict,
+            sample_id_map: IncrementalIdMap,
+            read_id_map: IncrementalIdMap):
+
+        support = self.get_genotype_support(paths=paths, sample_id_to_read_ids=sample_id_to_read_ids, sample_id_map=sample_id_map, read_id_map=read_id_map)
+
+        with open(output_path, 'w') as file:
+            for sample in support:
+                sample_id = sample_id_map.get_id(sample)
+                for path in support[sample]:
+                    path_id = paths.get_path_id(path)
+                    for read in support[sample][path]:
+                        read_id = read_id_map.get_id(read)
+                        file.write(','.join(list(map(str,[sample_id,sample,path_id,path,read_id,read]))))
+                        file.write('\n')
+
+        return
+
 
 def optimize_with_cpsat(
         path_to_read_costs,
         reads: IncrementalIdMap,
+        samples: IncrementalIdMap,
         paths: Paths,
         sample_to_reads: dict,
         output_dir: str,
@@ -398,8 +500,14 @@ def optimize_with_cpsat(
         vars.path_to_read[edge] = model.NewIntVar(0, 1, "p%dr%d" % edge)
 
     # Constraint: each read must map to only one haplotype/path
+    # Only consider pairs that have a cost assigned to them
     for read_id in reads.ids():
-        model.Add(sum([vars.path_to_read[(path_id,read_id)] for path_id in paths.ids()]) == 1)
+        v = [vars.path_to_read[(path_id,read_id)] for path_id in paths.ids() if (path_id,read_id) in path_to_read_costs]
+        if len(v) == 0:
+            print("WARNING: skipping read id %d because has no viable path assignments" % read_id)
+            continue
+
+        model.Add(sum(v) == 1)
 
     # Constraint: each sample's reads must map to at most two haplotypes/paths
     # Use a boolean indicator to tell whether any of a sample's reads are assigned to each haplotype/path
@@ -415,7 +523,12 @@ def optimize_with_cpsat(
             edge = (path_id,sample_id)
             vars.path_to_sample[edge] = model.NewBoolVar("p%ds%d" % edge)
 
-            s = sum([vars.path_to_read[(path_id,read_id)] for read_id in read_group])
+            v = [vars.path_to_read[(path_id,read_id)] for read_id in read_group if (path_id,read_id) in path_to_read_costs]
+            s = sum(v)
+            if len(v) == 0:
+                print("WARNING: skipping path id %d because has no viable path assignments" % path_id)
+                continue
+
             model.Add(s >= 1).OnlyEnforceIf(vars.path_to_sample[edge])
             model.Add(s == 0).OnlyEnforceIf(vars.path_to_sample[edge].Not())
 
@@ -423,11 +536,18 @@ def optimize_with_cpsat(
     for sample_id,read_group in sample_to_reads.items():
         model.Add(sum([vars.path_to_sample[(path_id,sample_id)] for path_id in paths.ids()]) <= 2)
 
+    # Add boolean indicators which imply that a path has been used (assigned any read)
     for path_id in paths.ids():
         vars.path[path_id] = model.NewBoolVar("p" + str(path_id))
 
         # Accumulate all possible assignments of this path to any reads
-        s = sum([vars.path_to_read[(path_id,read_id)] for read_id in reads.ids()])
+        v = [vars.path_to_read[(path_id,read_id)] for read_id in reads.ids() if (path_id,read_id) in path_to_read_costs]
+        s = sum(v)
+
+        if len(v) == 0:
+            print("WARNING: skipping path id %d because has no viable path assignments" % path_id)
+            continue
+
         model.Add(s >= 1).OnlyEnforceIf(vars.path[path_id])
         model.Add(s == 0).OnlyEnforceIf(vars.path[path_id].Not())
 
@@ -442,6 +562,8 @@ def optimize_with_cpsat(
     # n diploid samples can at most fill n*2 haplotypes
     # Sometimes there are may be fewer candidate paths than that
     max_feasible_haplotypes = min(len(paths), len(sample_to_reads)*2) + 1
+
+    vars.validate(sample_id_to_read_ids=sample_to_reads, sample_id_map=samples, path_to_read_costs=path_to_read_costs)
 
     for i in range(1,max_feasible_haplotypes):
         vars.n[i] = model.NewBoolVar("n" + str(i))
@@ -472,13 +594,14 @@ def optimize_with_cpsat(
         # past the optimal solution for as long as the timer is set, potentially starving future iterations of threads.
         o = ObjectiveEarlyStopping(60)
         status = solver.SolveWithSolutionCallback(model, o)
-        o.cancel_timer_thread()
 
         print("=====Stats:======")
         print(solver.SolutionInfo())
         print(solver.ResponseStats())
 
-        results[i] = vars.get_cache(status=status, solver=solver)
+        if status == cp_model.FEASIBLE or status == cp_model.OPTIMAL:
+            o.cancel_timer_thread()
+            results[i] = vars.get_cache(status=status, solver=solver)
 
         if len(results) > 1 and results[i].cost_a > results[i-1].cost_a:
             sys.stderr.write("Iteration stopped at n=%d because score worsened\n" % i)
@@ -547,7 +670,6 @@ def enumerate_paths_using_alignments(alleles, gaf_path: str, output_directory: s
     for p,path,frequency in paths:
         if frequency >= min_coverage:
             filtered_paths.add_path(path,frequency)
-            print(path)
 
     paths = filtered_paths
 
@@ -1098,6 +1220,10 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
     read_id_map = IncrementalIdMap(offset=len(paths))
     path_to_read_costs = defaultdict(int)
 
+    # For now, doouble counting softclips is allowed, because we don't really care,
+    # the alignment to the true haplotype should contain no clips
+    non_match_ops = {'X','I','D','S'}
+
     # Because of the potential for supplementary alignments, need to first aggregate costs per read
     for bam_path in bam_paths:
         sys.stderr.write(bam_path)
@@ -1110,8 +1236,8 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
         for alignment in bam:
             read_name = alignment.query_name
 
-            # TODO: [optimize] eventually alignment should be done in memory, and this filtering step could be performed
-            # before aligning the reads with minimap2, which would save (potentially considerable) time
+            # # TODO: [optimize] eventually alignment should be done in memory, and this filtering step could be performed
+            # # before aligning the reads with minimap2, which would save (potentially considerable) time
             if read_name not in spanning_reads:
                 continue
 
@@ -1120,17 +1246,62 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
             # TODO: [fix] verify that the NM tag is not double-counting softclips/hardclips in a supplementary alignment?
             path_name = bam.header.get_reference_name(alignment.reference_id)
             path_id = paths.get_path_id(path_name)
+            path_length = bam.get_reference_length(path_name)
 
-            # TODO: more filtering? possible to have unmapped reads?
+            # TODO: stop using a constant window expansion, and use tandem tracks instead
+            window_start = flank_length - 200
+            window_stop = path_length - flank_length + 200
+
+            alignment_start = alignment.reference_start
+            alignment_stop = alignment.reference_end
+
+            # Check that read is spanning this haplotype (without any softclips)
+            # If it's not spanning, add a fixed length penalty to break tie cases between haplotypes
+            if not alignment_start < window_start < window_stop < alignment_stop:
+                path_to_read_costs[(path_id,read_id)] += 50
+
             if not alignment.is_secondary:
-                edit_distance = alignment.get_tag("NM")
-                path_to_read_costs[(path_id,read_id)] += edit_distance
+                for ref_start,ref_stop,query_start,query_stop,operation,length in iterate_cigar(alignment):
+                    c = cigar_index_to_char[operation]
+                    is_non_match = (c in non_match_ops)
 
-                total += edit_distance
+                    # This iterator might not give ordered ref start/stop if the read is reversed (TODO: make a ref-oriented version?)
+                    if ref_stop < ref_start:
+                        r = ref_stop
+                        ref_stop = ref_start
+                        ref_start = r
+
+                    # Cigar is contained entirely in the window
+                    if window_start < ref_start <= ref_stop < window_stop:
+                        cost = length * int(is_non_match)
+                        path_to_read_costs[(path_id,read_id)] += cost
+                        total += cost
+
+                    # Cigar covers entire window
+                    elif ref_start <= window_start < window_stop <= ref_stop:
+                        cost = (window_stop - window_start + 1) * int(is_non_match)
+                        path_to_read_costs[(path_id,read_id)] += cost
+                        total += cost
+
+                    # Cigar is overlapping the start of the window
+                    elif ref_start <= window_start <= ref_stop:
+                        cost = (ref_stop - window_start + 1) * int(is_non_match)
+                        path_to_read_costs[(path_id,read_id)] += cost
+                        total += cost
+
+                    # Cigar is overlapping the end of the window
+                    elif ref_start <= window_stop <= ref_stop:
+                        cost = (window_stop - ref_start + 1) * int(is_non_match)
+                        path_to_read_costs[(path_id,read_id)] += cost
+                        total += cost
+
                 n += 1
 
         avg_edit_distance = total/n
         histogram.update(avg_edit_distance)
+
+    # for key,value in path_to_read_costs.items():
+    #     print(key,value)
 
     axes.plot(histogram.get_bin_centers(), histogram.get_histogram(), color="#007cbe")
 
@@ -1151,14 +1322,22 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
     for sample_name,read_names in sample_to_reads.items():
         # Sometimes a read may not be in the id_map, because the id_map is generated only using reads that
         # were aligned in the BAM of reads-to-path. We skip any read that doesn't appear in the mappings.
-        read_ids = list(filter(None,[read_id_map.get_id(x) for x in read_names]))
+        read_ids = set(filter(None,[read_id_map.get_id(x) for x in read_names]))
 
         sample_id = sample_id_map.get_id(sample_name)
         sample_id_to_read_ids[sample_id] = read_ids
 
+    sample_to_read_output_path = os.path.join(output_directory, "sample_to_read.csv")
+    with open(sample_to_read_output_path, 'w') as file:
+        for sample_id,read_ids in sample_id_to_read_ids.items():
+            for read_id in read_ids:
+                file.write("%d,%d" % (sample_id,read_id))
+                file.write("\n")
+
     results = optimize_with_cpsat(
         path_to_read_costs=path_to_read_costs,
         reads=read_id_map,
+        samples=sample_id_map,
         paths=paths,
         sample_to_reads=sample_id_to_read_ids,
         n_threads=30,
@@ -1285,16 +1464,22 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
             file.write(">" + sequence_name)
             file.write("\n")
             for i in paths.get_path(path_id):
-                print(i, len(alleles[i].sequence))
                 file.write(alleles[i].sequence)
 
             file.write("\n")
 
     optimizer_results_path = os.path.join(output_directory, "optimizer_results.png")
     pyplot.savefig(optimizer_results_path, dpi=200)
-
-    # pyplot.show()
     pyplot.close()
+
+    genotype_support_output_path = os.path.join(output_directory, "genotype_support.csv")
+
+    results[n_min].write_genotype_support_to_file(
+        output_path=genotype_support_output_path,
+        paths=paths,
+        sample_id_to_read_ids=sample_id_to_read_ids,
+        sample_id_map=sample_id_map,
+        read_id_map=read_id_map)
 
     return summary_string
 
@@ -1354,16 +1539,16 @@ def main():
     chromosome = "chr20"
 
     coords = [
-        # [10437604,10440525],
-        # [18259924,18261835],
+        [10437604,10440525],
+        [18259924,18261835],
         # [54975152,54976857], # Nightmare region (tandem)
-        # [18689217,18689256],
-        # [18828383,18828733],
-        # [47475093,47475817],
-        # [49404497,49404943],
-        # [55000754,55000852],
+        [18689217,18689256],
+        [18828383,18828733],
+        [47475093,47475817],
+        [49404497,49404943],
+        [55000754,55000852],
         [55486867,55492722],
-        # [7901318,7901522]
+        [7901318,7901522]
     ]
 
     summary_strings = list()

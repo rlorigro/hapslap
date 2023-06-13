@@ -37,7 +37,7 @@ class Paths:
         if self.has_path(path_id):
             return self.id_to_path[path_id]
         else:
-            raise Exception("ERROR: path ID %d not in paths"% path_id)
+            raise Exception("ERROR: path ID %d not in paths" % path_id)
 
     def has_path(self, path):
         has_path = None
@@ -67,16 +67,26 @@ class Paths:
 
         return p
 
+    def get_path_name(self, path) -> str:
+        p = None
+
+        if type(path) == tuple:
+            p = '_'.join(list(map(str,path))) if len(path) > 1 else str(path[0])
+        elif type(path) == str:
+            p = path
+        elif type(path) == int:
+            p = '_'.join(list(map(str,self.id_to_path[path])))
+        else:
+            raise Exception("ERROR: path of type %s not str (a_b_c), tuple[int] (a,b,c), or int (ID): %s" % (str(type(path)), str(path)))
+
+        return p
+
     def get_path_weight(self, path):
         return self.id_to_weight[self.get_path_id(path)]
 
     @staticmethod
     def get_path_tuple(path_name: str) -> tuple[int]:
         return tuple(map(int,path_name.split('_')))
-
-    @staticmethod
-    def get_path_name(path: tuple[int]) -> str:
-        return '_'.join(list(map(str,path)))
 
     def ids(self):
         for p in range(self.n):
@@ -95,7 +105,7 @@ def test():
         (1,2,3):0,
         (4,5,6):1,
         (7,8,9):2,
-        (10):3
+        tuple([10]):3
     }
 
     paths = Paths()
@@ -123,7 +133,7 @@ def test():
         paths.increment_weight(expected_name,10)
 
     weights = paths.id_to_weight
-    expected_weights = [30, 31, 32]
+    expected_weights = [30, 31, 32, 33]
     if not weights == expected_weights:
         raise Exception("ERROR: path weights %s != %s" % (str(weights), str(expected_weights)))
 
