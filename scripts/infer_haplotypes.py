@@ -31,7 +31,6 @@ import numpy
 import pysam
 
 
-
 class Allele:
     def __init__(self, start, stop, sequence):
         self.start = int(start)
@@ -46,6 +45,9 @@ class Allele:
 
     def __str__(self):
         return "[%s,%s]\t%s" % (self.start, self.stop, self.sequence)
+
+    def as_comma_separated_str(self):
+        return ','.join([str(self.start), str(self.stop), str(len(self.sequence)), ' '.join(list(self.samples)), str(self.is_left_flank), str(self.is_right_flank)])
 
     def __hash__(self):
         return hash((self.start, self.stop, self.sequence))
@@ -645,6 +647,8 @@ def enumerate_paths_using_alignments(alleles, gaf_path: str, output_directory: s
             tokens = line.strip().split('\t')
             read_name = tokens[0]
 
+            print(read_name)
+
             if read_subset is not None and read_name not in read_subset:
                 print("skipping read: " + read_name)
                 continue
@@ -662,12 +666,17 @@ def enumerate_paths_using_alignments(alleles, gaf_path: str, output_directory: s
                 print(tokens[5])
                 raise Exception("ERROR: Non GFA character found in path column of GFA")
 
+            print(path)
+
             if len(path) > 1 and alleles[path[0]].is_left_flank and alleles[path[-1]].is_right_flank:
+                print("accepted")
                 paths.increment_weight(path,1)
 
     filtered_paths = Paths()
 
+    print()
     for p,path,frequency in paths:
+        print(frequency, path)
         if frequency >= min_coverage:
             filtered_paths.add_path(path,frequency)
 
@@ -774,7 +783,22 @@ def run_minigraph(output_directory, gfa_path, fasta_path):
     # -o reads_vs_graph.gaf \
     # graph.gfa \
     # reads.fasta \
-    args = ["minigraph", "-c", "-x", "lr", "-o", output_path, gfa_path, fasta_path]
+    # args = ["minigraph", "-c", "-x", "lr", "-o", output_path, gfa_path, fasta_path]
+
+    args = [
+        "minigraph",
+        "-c",
+        "-g", str(10000),
+        "-k", str(14),
+        "-r", "1000,20000",
+        "-n", "3,3",
+        "-m", "30,20",
+        "-p", str(0.5),
+        "-j", str(0.1),
+        "-x", "lr",
+        "-o", output_path,
+        gfa_path,
+        fasta_path]
 
     with open(output_path, 'a') as file:
         sys.stderr.write(" ".join(args)+'\n')
@@ -833,7 +857,7 @@ def enumerate_paths(alleles, graph, output_directory):
 def vcf_to_graph(ref_path, vcf_paths, chromosome, ref_start, ref_stop, ref_sample_name, flank_length):
     region_string = chromosome + ":" + str(ref_start) + "-" + str(ref_stop)
 
-    ref_sequence = FastaFile(ref_path).fetch("chr20")
+    ref_sequence = FastaFile(ref_path).fetch(chromosome)
 
     alleles = dict()
 
@@ -990,12 +1014,14 @@ def vcf_to_graph(ref_path, vcf_paths, chromosome, ref_start, ref_stop, ref_sampl
 
 
 def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
+    generate_debug_alignments = True
     n_threads = 30
     n_sort_threads = 4
     flank_length = 20000
 
     # Used by initial minigraph alignment to select paths for the optimizer to cover
     min_coverage = 2
+    max_path_to_read_cost = 1000
 
     region_string = chromosome + ":" + str(ref_start) + "-" + str(ref_stop)
 
@@ -1058,6 +1084,12 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
         ref_stop=ref_stop,
         ref_sample_name=ref_sample_name,
         flank_length=flank_length)
+
+    alleles_output_path = os.path.join(output_directory,"alleles.csv")
+    with open(alleles_output_path, 'w') as file:
+        file.write("id,start,stop,length,samples,is_left_flank,is_right_flank\n")
+        for i in range(len(alleles)):
+            file.write(str(i) + ',' + alleles[i].as_comma_separated_str() + '\n')
 
     ref_id_offset = None
     for i in range(len(alleles)):
@@ -1134,6 +1166,8 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
     output_fasta_path = os.path.join(output_directory, "reads.fasta")
 
     sample_to_reads = defaultdict(list)
+    read_id_map = IncrementalIdMap()
+
     for path in bam_paths:
         print("bam_path:", path)
 
@@ -1144,6 +1178,9 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
             tokenator=tokenator)
 
         read_names = get_read_names_from_bam(region_bam_path)
+
+        for read_name in read_names:
+            read_id_map.add(read_name)
 
         # TODO: catalog samples in a more robust way
         sample_name = os.path.basename(path).replace(".bam","").split('_')[0]
@@ -1210,6 +1247,33 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
 
         bam_paths.append(bam_path)
 
+    if generate_debug_alignments:
+        chromosome_fasta_path = os.path.join(output_directory, chromosome + ".fasta")
+        with open(chromosome_fasta_path, 'w') as file:
+            ref_sequence = FastaFile(ref_path).fetch(chromosome)
+            file.write(">")
+            file.write(chromosome)
+            file.write('\n')
+            file.write(ref_sequence)
+            file.write('\n')
+
+        combined_fasta_path = os.path.join(output_directory, "all_paths.fasta")
+
+        with open(combined_fasta_path,'w') as out_file:
+            for p,path in enumerate(fasta_paths):
+                with open(path,'r') as file:
+                    for line in file:
+                        out_file.write(line)
+
+        run_minimap2(
+            ref_fasta_path=chromosome_fasta_path,
+            reads_fasta_path=combined_fasta_path,
+            preset="asm20",
+            n_threads=n_threads,
+            n_sort_threads=n_sort_threads,
+            output_directory=path_subdirectory,
+            filename_prefix="all_paths_vs_ref")
+
     pyplot.close("all")
 
     fig = pyplot.figure()
@@ -1217,7 +1281,6 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
 
     histogram = IterativeHistogram(start=0, stop=1000, n_bins=200)
 
-    read_id_map = IncrementalIdMap(offset=len(paths))
     path_to_read_costs = defaultdict(int)
 
     # For now, doouble counting softclips is allowed, because we don't really care,
@@ -1235,13 +1298,12 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
         n = 0.0
         for alignment in bam:
             read_name = alignment.query_name
+            read_id = read_id_map.get_id(read_name)
 
-            # # TODO: [optimize] eventually alignment should be done in memory, and this filtering step could be performed
-            # # before aligning the reads with minimap2, which would save (potentially considerable) time
+            # TODO: [optimize] eventually alignment should be done in memory, and this filtering step could be performed
+            # before aligning the reads with minimap2, which would save (potentially considerable) time
             if read_name not in spanning_reads:
                 continue
-
-            read_id = read_id_map.add(read_name)
 
             # TODO: [fix] verify that the NM tag is not double-counting softclips/hardclips in a supplementary alignment?
             path_name = bam.header.get_reference_name(alignment.reference_id)
@@ -1257,8 +1319,9 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
 
             # Check that read is spanning this haplotype (without any softclips)
             # If it's not spanning, add a fixed length penalty to break tie cases between haplotypes
+            # TODO: fix this in the region selection process, not by having a constant
             if not alignment_start < window_start < window_stop < alignment_stop:
-                path_to_read_costs[(path_id,read_id)] += 50
+                path_to_read_costs[(path_id,read_id)] += 500
 
             if not alignment.is_secondary:
                 for ref_start,ref_stop,query_start,query_stop,operation,length in iterate_cigar(alignment):
@@ -1303,6 +1366,11 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
     # for key,value in path_to_read_costs.items():
     #     print(key,value)
 
+    # Filter edges in model that have unreasonably large costs
+    for key in list(path_to_read_costs.keys()):
+        if path_to_read_costs[key] > max_path_to_read_cost:
+            del path_to_read_costs[key]
+
     axes.plot(histogram.get_bin_centers(), histogram.get_histogram(), color="#007cbe")
 
     reads_csv_path = os.path.join(output_directory, "reads.csv")
@@ -1320,9 +1388,11 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
     # Make a duplicate of the sample->read mapping, using ids instead of names
     sample_id_to_read_ids = dict()
     for sample_name,read_names in sample_to_reads.items():
-        # Sometimes a read may not be in the id_map, because the id_map is generated only using reads that
-        # were aligned in the BAM of reads-to-path. We skip any read that doesn't appear in the mappings.
-        read_ids = set(filter(None,[read_id_map.get_id(x) for x in read_names]))
+        # # Sometimes a read may not be in the id_map, because the id_map is generated only using reads that
+        # # were aligned in the BAM of reads-to-path. We skip any read that doesn't appear in the mappings.
+        # read_ids = set(filter(None,[read_id_map.get_id(x) for x in read_names]))
+
+        read_ids = [read_id_map.get_id(x) for x in read_names]
 
         sample_id = sample_id_map.get_id(sample_name)
         sample_id_to_read_ids[sample_id] = read_ids
@@ -1333,6 +1403,26 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
             for read_id in read_ids:
                 file.write("%d,%d" % (sample_id,read_id))
                 file.write("\n")
+
+    read_to_sample = dict()
+    for sample,reads in sample_to_reads.items():
+        for read in reads:
+            read_to_sample[read] = sample
+
+    costs_output_path = os.path.join(output_directory, "costs.csv")
+    with open(costs_output_path, 'w') as file:
+        file.write("path_id,read_id,sample_id,path_name,read_name,sample_name,value")
+        for key,value in path_to_read_costs.items():
+            path_id = str(key[0])
+            path_name = paths.get_path_name(key[0])
+            read_id = str(key[1])
+            read_name = read_id_map.get_name(key[1])
+
+            sample_name = read_to_sample[read_name]
+            sample_id = str(sample_id_map.get_id(sample_name))
+
+            file.write(','.join([path_id,read_id,sample_id,path_name,read_name,sample_name,str(value)]))
+            file.write('\n')
 
     results = optimize_with_cpsat(
         path_to_read_costs=path_to_read_costs,
@@ -1380,6 +1470,7 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
     c_norm_min = None
 
     for n,cache in results.items():
+        # A constant of 1 is added to make the c_norm more impactful on total distance from utopia point
         c_norm = float(cache.cost_a - c_start) / float(c_stop - c_start) + 1
         n_norm = (float(n) - n_start) / float(n_stop - n_start) + 0.001
 
