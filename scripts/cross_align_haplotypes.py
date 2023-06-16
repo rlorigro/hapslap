@@ -1,3 +1,4 @@
+from pywfa import WavefrontAligner
 import edlib
 
 from modules.IncrementalIdMap import IncrementalIdMap
@@ -7,9 +8,9 @@ from modules.IterativeHistogram import IterativeHistogram
 from collections import defaultdict
 from itertools import combinations
 from multiprocessing import Pool
+from glob import glob
 from copy import copy
 import numpy
-import glob
 import os
 import re
 
@@ -83,7 +84,45 @@ def iterate_fasta(path, force_upper_case=True, normalize_name=True):
     yield s
 
 
-def cross_align_sequences(sequences:dict, n_threads):
+def get_indel_distance_from_string(alignment: dict, minimum_indel_length=1):
+    total_indels = 0
+
+    length_token = ""
+    for c in alignment["cigars"]:
+        if c.isnumeric():
+            length_token += c
+        else:
+            l = int(length_token)
+            if l >= minimum_indel_length and (c == 'I' or c == 'D'):
+                total_indels += l
+
+    return total_indels
+
+
+def get_indel_distance_from_tuples(cigar_tuples):
+    total_indels = 0
+
+    for c,l in cigar_tuples:
+        if c == 1 or c == 2:
+            total_indels += l
+
+    return total_indels
+
+
+def align_and_get_indel_distance(a:Sequence,b:Sequence,output_dir=None):
+    aligner = WavefrontAligner()
+
+    aligner(a.sequence,b.sequence)
+    d = get_indel_distance_from_tuples(aligner.cigartuples)
+
+    if output_dir is not None:
+        output_path = os.path.join(output_dir, a.name + "_" + b.name + ".txt")
+        aligner.cigar_print_pretty(output_path)
+
+    return d
+
+
+def cross_align_sequences(sequences:dict, n_threads,output_dir=None):
     pairs = list()
     lengths = list()
     args = list()
@@ -94,16 +133,16 @@ def cross_align_sequences(sequences:dict, n_threads):
 
         lengths.append((len(a),len(b)))
         pairs.append((a.name,b.name))
-        args.append((a.sequence,b.sequence,"NW","distance"))
+        args.append((a,b,output_dir))
 
     results = None
     with Pool(n_threads) as pool:
-        results = pool.starmap(align, args)
+        results = pool.starmap(align_and_get_indel_distance, args)
 
     return pairs,lengths,results
 
 
-def align_sequences_to_other_sequences(a_seqs:dict, b_seqs:dict, n_threads):
+def align_sequences_to_other_sequences(a_seqs:dict, b_seqs:dict, n_threads:int, output_dir:str=None):
     pairs = list()
     lengths = list()
     args = list()
@@ -112,11 +151,11 @@ def align_sequences_to_other_sequences(a_seqs:dict, b_seqs:dict, n_threads):
         for b_name,b in b_seqs.items():
             lengths.append((len(a),len(b)))
             pairs.append((a,b))
-            args.append((a.sequence,b.sequence,"NW","path"))
+            args.append((a,b,output_dir))
 
     results = None
     with Pool(n_threads) as pool:
-        results = pool.starmap(align, args)
+        results = pool.starmap(align_and_get_indel_distance, args)
 
     return pairs,lengths,results
 
@@ -131,15 +170,13 @@ def orient_test_haps_by_best_match(ref_sequences, test_sequences, id_map):
         a = sample_name + "_1"
         b = sample_name + "_2"
 
-        aa = align(ref_sequences[a].sequence,test_sequences[a].sequence,"NW","distance")["editDistance"]
-        bb = align(ref_sequences[b].sequence,test_sequences[b].sequence,"NW","distance")["editDistance"]
-        ab = align(ref_sequences[a].sequence,test_sequences[b].sequence,"NW","distance")["editDistance"]
-        ba = align(ref_sequences[b].sequence,test_sequences[a].sequence,"NW","distance")["editDistance"]
+        aa = align_and_get_indel_distance(ref_sequences[a],test_sequences[a])
+        bb = align_and_get_indel_distance(ref_sequences[b],test_sequences[b])
+        ab = align_and_get_indel_distance(ref_sequences[a],test_sequences[b])
+        ba = align_and_get_indel_distance(ref_sequences[b],test_sequences[a])
 
         cis_distance = aa + bb
         trans_distance = ab + ba
-
-        # print("%.3f %.3f\n%.3f %.3f\n%s" % (float(aa),float(ab),float(ba),float(bb),str(cis_distance > trans_distance)))
 
         # Flip the sequences around if it is a better match
         if cis_distance > trans_distance:
@@ -150,6 +187,35 @@ def orient_test_haps_by_best_match(ref_sequences, test_sequences, id_map):
             test_sequences[b] = Sequence(b,a_seq)
 
     return test_sequences
+
+
+def write_sample_alignments(ref_sequences, test_sequences, id_map, output_dir):
+    sample_names = set()
+    for id,name in id_map:
+        sample_name = name.split('_')[0]
+        sample_names.add(sample_name)
+
+    for sample_name in sample_names:
+        a = sample_name + "_1"
+        b = sample_name + "_2"
+
+        aligner = WavefrontAligner()
+
+        output_path = os.path.join(output_dir, a + "_" + a + ".txt")
+        aligner(ref_sequences[a].sequence,test_sequences[a].sequence)
+        aligner.cigar_print_pretty(output_path)
+
+        output_path = os.path.join(output_dir, b + "_" + b + ".txt")
+        aligner(ref_sequences[b].sequence,test_sequences[b].sequence)
+        aligner.cigar_print_pretty(output_path)
+
+        output_path = os.path.join(output_dir, a + "_" + b + ".txt")
+        aligner(ref_sequences[a].sequence,test_sequences[b].sequence)
+        aligner.cigar_print_pretty(output_path)
+
+        output_path = os.path.join(output_dir, b + "_" + a + ".txt")
+        aligner(ref_sequences[b].sequence,test_sequences[a].sequence)
+        aligner.cigar_print_pretty(output_path)
 
 
 def duplicate_homozygous_haps(sequences):
@@ -177,17 +243,15 @@ def duplicate_homozygous_haps(sequences):
     return sequences, duplicated
 
 
-def main():
-    # TODO: do phase assignment step?
-
-    output_dir = "/home/ryan/data/test_hapslap/evaluation/"
+def write_formatted_alignments_per_sample():
+    output_dir = "/home/ryan/data/test_hapslap/evaluation/sample_alignments/"
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
     paths = [
-        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_7901318-7901522.fasta","/home/ryan/data/test_hapslap/results/chr20_7901318-7901522/assigned_haplotypes.fasta"],
+        # ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_7901318-7901522.fasta","/home/ryan/data/test_hapslap/results/chr20_7901318-7901522/assigned_haplotypes.fasta"],
         # ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_10437604-10440525.fasta","/home/ryan/data/test_hapslap/results/chr20_10437604-10440525/assigned_haplotypes.fasta"],
-        # ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_18259924-18261835.fasta","/home/ryan/data/test_hapslap/results/chr20_18259924-18261835/assigned_haplotypes.fasta"],
+        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_18259924-18261835.fasta","/home/ryan/data/test_hapslap/results/chr20_18259924-18261835/assigned_haplotypes.fasta"],
         # ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_18689217-18689256.fasta","/home/ryan/data/test_hapslap/results/chr20_18689217-18689256/assigned_haplotypes.fasta"],
         # ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_18828383-18828733.fasta","/home/ryan/data/test_hapslap/results/chr20_18828383-18828733/assigned_haplotypes.fasta"],
         # ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_47475093-47475817.fasta","/home/ryan/data/test_hapslap/results/chr20_47475093-47475817/assigned_haplotypes.fasta"],
@@ -196,11 +260,180 @@ def main():
         # ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_55486867-55492722.fasta","/home/ryan/data/test_hapslap/results/chr20_55486867-55492722/assigned_haplotypes.fasta"]
     ]
 
+    for ref_path,test_path in paths:
+        print(ref_path)
+        print(test_path)
+
+        id_map = IncrementalIdMap()
+
+        ref_sequences = {x.name:x for x in iterate_fasta(ref_path)}
+        test_sequences = {x.name:x for x in iterate_fasta(test_path)}
+
+        duplicated_homozygous_haps = set()
+        test_sequences,test_duplicated = duplicate_homozygous_haps(test_sequences)
+        ref_sequences,ref_duplicated = duplicate_homozygous_haps(ref_sequences)
+        duplicated_homozygous_haps = duplicated_homozygous_haps.union(test_duplicated)
+        duplicated_homozygous_haps = duplicated_homozygous_haps.union(ref_duplicated)
+
+        print(duplicated_homozygous_haps)
+
+        for key in list(ref_sequences.keys()):
+            if key not in test_sequences:
+                print("WARNING: haplotype not in test_sequences: " + key)
+                del ref_sequences[key]
+
+        for key in sorted(ref_sequences):
+            id_map.add(key)
+
+        write_sample_alignments(ref_sequences, test_sequences, id_map, output_dir)
+
+
+def evaluate_upper_bound():
+    output_dir = "/home/ryan/data/test_hapslap/evaluation/upper_bound"
     n_threads = 30
+    flank_size = 20000
+    distance_threshold = 25
 
-    # paths = glob.glob(path + "*.fasta")
+    paths = [
+        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_7901318-7901522.fasta","/home/ryan/data/test_hapslap/results/chr20_7901318-7901522/paths/"],
+        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_10437604-10440525.fasta","/home/ryan/data/test_hapslap/results/chr20_10437604-10440525/paths/"],
+        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_18259924-18261835.fasta","/home/ryan/data/test_hapslap/results/chr20_18259924-18261835/paths/"],
+        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_18689217-18689256.fasta","/home/ryan/data/test_hapslap/results/chr20_18689217-18689256/paths/"],
+        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_18828383-18828733.fasta","/home/ryan/data/test_hapslap/results/chr20_18828383-18828733/paths/"],
+        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_47475093-47475817.fasta","/home/ryan/data/test_hapslap/results/chr20_47475093-47475817/paths/"],
+        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_49404497-49404943.fasta","/home/ryan/data/test_hapslap/results/chr20_49404497-49404943/paths/"],
+        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_55000754-55000852.fasta","/home/ryan/data/test_hapslap/results/chr20_55000754-55000852/paths/"],
+        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_55486867-55492722.fasta","/home/ryan/data/test_hapslap/results/chr20_55486867-55492722/paths/"]
+    ]
 
-    distance_threshold = 20
+    for ref_path,test_path in paths:
+        test_fasta_paths = [os.path.join(test_path,x) for x in glob("*.fasta", root_dir=test_path)]
+
+        ref_sequences = {x.name:x for x in iterate_fasta(ref_path)}
+        test_sequences = dict()
+
+        for path in test_fasta_paths:
+            for item in iterate_fasta(path, normalize_name=False):
+                item.sequence = item.sequence[flank_size:len(item.sequence) - flank_size]
+                test_sequences[item.name] = item
+
+        ref_id_map = IncrementalIdMap()
+        test_id_map = IncrementalIdMap()
+
+        for key in sorted(ref_sequences):
+            ref_id_map.add(key)
+
+        for key in sorted(test_sequences):
+            test_id_map.add(key)
+
+        pairs,lengths,results = cross_align_sequences(sequences=ref_sequences,n_threads=n_threads) #,output_dir=output_dir)
+
+        graph = networkx.Graph()
+
+        for i in range(len(results)):
+            a,b = pairs[i]
+            l_a,l_b = lengths[i]
+            d = results[i]
+
+            # w = d
+            w = float(l_a + l_b - d) / float(l_a + l_b)
+
+            id_a = ref_id_map.get_id(a)
+            id_b = ref_id_map.get_id(b)
+
+            if id_a not in graph:
+                graph.add_node(id_a)
+
+            if id_b not in graph:
+                graph.add_node(id_b)
+
+            if d <= distance_threshold:
+                graph.add_edge(id_a, id_b, weight=w)
+
+        ref_labels = dict()
+        for id,name in ref_id_map:
+            ref_labels[id] = name
+
+        components = list(networkx.connected_components(graph))
+
+        component_map = dict()
+        for c,component in enumerate(components):
+            for n in component:
+                component_map[n] = c
+
+        # This will order all IDs so that clusters are contiguous, otherwise randomly ordered
+        id_to_cluster_map = dict()
+        for id in sorted(range(len(ref_id_map)), key=lambda x: component_map[x]):
+            id_to_cluster_map[id] = len(id_to_cluster_map)
+
+        pairs,lengths,results = align_sequences_to_other_sequences(
+            a_seqs=ref_sequences,
+            b_seqs=test_sequences,
+            n_threads=n_threads,
+            # output_dir=output_dir
+        )
+
+        matrix = numpy.zeros([len(ref_id_map),len(test_id_map)])
+
+        for i in range(len(results)):
+            name_ref = pairs[i][0].name
+            name_test = pairs[i][1].name
+
+            l_ref,l_test = lengths[i]
+            d = results[i]
+
+            id_ref = ref_id_map.get_id(name_ref)
+            id_test = test_id_map.get_id(name_test)
+
+            matrix[id_to_cluster_map[id_ref]][id_test] = d
+
+        fig = pyplot.figure()
+        axes = pyplot.axes()
+        p = axes.matshow(matrix,cmap='viridis')
+        pyplot.colorbar(p, ax=axes)
+
+        # Construct tick labels based on the clustering order
+        labels = [None]*len(ref_id_map.id_to_name)
+        for id,name in ref_id_map:
+            labels[id_to_cluster_map[id]] = name
+
+        axes.xaxis.set_ticks_position('bottom')
+
+        axes.set_yticks(list(range(len(ref_id_map))))
+        axes.set_yticklabels(labels)
+
+        for x in range(matrix.shape[0]):
+            for y in range(matrix.shape[1]):
+                if matrix[x][y] < distance_threshold:
+                    pyplot.plot(y,x,marker='o',color='red',markersize=0.7,markeredgecolor='none')
+
+        axes.tick_params(axis='both', which='major', labelsize=3)
+
+        pyplot.tight_layout()
+        output_path = os.path.join(output_dir,os.path.basename(ref_path).replace(".fasta", "_confusion.png"))
+        fig.savefig(output_path, dpi=500, bbox_inches='tight')
+        pyplot.close('all')
+
+
+def evaluate_test_haplotypes():
+    n_threads = 30
+    distance_threshold = 25
+
+    output_dir = "/home/ryan/data/test_hapslap/evaluation/"
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    paths = [
+        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_7901318-7901522.fasta","/home/ryan/data/test_hapslap/results/chr20_7901318-7901522/assigned_haplotypes.fasta"],
+        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_10437604-10440525.fasta","/home/ryan/data/test_hapslap/results/chr20_10437604-10440525/assigned_haplotypes.fasta"],
+        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_18259924-18261835.fasta","/home/ryan/data/test_hapslap/results/chr20_18259924-18261835/assigned_haplotypes.fasta"],
+        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_18689217-18689256.fasta","/home/ryan/data/test_hapslap/results/chr20_18689217-18689256/assigned_haplotypes.fasta"],
+        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_18828383-18828733.fasta","/home/ryan/data/test_hapslap/results/chr20_18828383-18828733/assigned_haplotypes.fasta"],
+        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_47475093-47475817.fasta","/home/ryan/data/test_hapslap/results/chr20_47475093-47475817/assigned_haplotypes.fasta"],
+        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_49404497-49404943.fasta","/home/ryan/data/test_hapslap/results/chr20_49404497-49404943/assigned_haplotypes.fasta"],
+        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_55000754-55000852.fasta","/home/ryan/data/test_hapslap/results/chr20_55000754-55000852/assigned_haplotypes.fasta"],
+        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_55486867-55492722.fasta","/home/ryan/data/test_hapslap/results/chr20_55486867-55492722/assigned_haplotypes.fasta"]
+    ]
 
     for ref_path,test_path in paths:
         print(ref_path)
@@ -238,7 +471,7 @@ def main():
         for i in range(len(results)):
             a,b = pairs[i]
             l_a,l_b = lengths[i]
-            d = results[i]["editDistance"]
+            d = results[i]
 
             histogram.update(d)
 
@@ -346,7 +579,7 @@ def main():
                 name_test = pairs[i][1].name
 
                 l_ref,l_test = lengths[i]
-                d = results[i]["editDistance"]
+                d = results[i]
 
                 id_ref = id_map.get_id(name_ref)
                 id_test = id_map.get_id(name_test)
@@ -362,24 +595,6 @@ def main():
                 if d <= distance_threshold:
                     graph.add_edge(id_ref, id_test, weight=w)
 
-                # file.write(','.join([name_ref,str(id_ref),str(l_ref),name_test,str(id_test),str(l_test),str(d)]))
-                # file.write('\n')
-                # file.write(pairs[i][0].sequence)
-                # file.write('\n')
-                # file.write(pairs[i][1].sequence)
-                # file.write('\n')
-                # alignment = edlib.getNiceAlignment(results[i],pairs[i][0].sequence,pairs[i][1].sequence)
-                # file.write(alignment['query_aligned'])
-                # file.write('\n')
-                # file.write(alignment['matched_aligned'])
-                # file.write('\n')
-                # file.write(alignment['target_aligned'])
-                # file.write('\n')
-                # file.write('\n')
-
-        # sums = numpy.sum(matrix, axis=1)
-        # matrix /= sums
-
         fig = pyplot.figure()
         axes = pyplot.axes()
 
@@ -387,7 +602,6 @@ def main():
             colors_list.append("red")
 
         pos = networkx.spring_layout(graph, weight='weight')
-        # pos = networkx.spectral_layout(graph, weight='weight')
 
         networkx.draw(graph,pos,alpha=0.6,node_color=colors_list,linewidths=0,width=0.5,node_size=20)
 
@@ -435,6 +649,11 @@ def main():
         pyplot.close('all')
 
 
+def main():
+    evaluate_test_haplotypes()
+    evaluate_upper_bound()
+    # write_formatted_alignments_per_sample()
+
+
 if __name__ == "__main__":
     main()
-
