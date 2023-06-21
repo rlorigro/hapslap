@@ -1,4 +1,5 @@
 from threading import Timer
+import json
 import time
 import math
 import sys
@@ -1013,7 +1014,39 @@ def vcf_to_graph(ref_path, vcf_paths, chromosome, ref_start, ref_stop, ref_sampl
     return graph, alleles
 
 
-def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
+def trim_flanks_from_ref_alleles(alleles, flank_length):
+    # Get start and stop nodes
+    start_node = None
+    stop_node = None
+
+    for i in range(len(alleles)):
+        if alleles[i].is_left_flank:
+            start_node = i
+
+        if alleles[i].is_right_flank:
+            stop_node = i
+
+    print("Trimming start and stop nodes: %d %d " % (start_node,stop_node))
+    # Trim flanks off the allele sequences
+    s_start = alleles[start_node].sequence
+    l_start = len(s_start)
+    s_start = s_start[flank_length:]
+
+    s_stop = alleles[stop_node].sequence
+    l_stop = len(s_stop)
+    s_stop = s_stop[:(l_stop - flank_length)]
+
+    print("before trimming: ", l_start)
+    print("after trimming: ", len(s_start))
+    print("before trimming: ", l_stop)
+    print("after trimming: ", len(s_stop))
+
+    alleles[start_node].sequence = s_start
+    alleles[stop_node].sequence = s_stop
+
+
+
+def infer_haplotypes(ref_path, bam_paths, vcf_paths, chromosome, ref_start, ref_stop, sample_names, output_directory):
     generate_debug_alignments = True
     n_threads = 30
     n_sort_threads = 4
@@ -1025,49 +1058,12 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
 
     region_string = chromosome + ":" + str(ref_start) + "-" + str(ref_stop)
 
-    output_directory = os.path.join("/home/ryan/data/test_hapslap/results", region_string.replace(':',"_"))
+    output_directory = os.path.join(output_directory, region_string.replace(':',"_"))
 
     if not os.path.exists(output_directory):
         os.makedirs(output_directory)
     else:
         exit("ERROR: output directory exists already: %s" % output_directory)
-
-    ref_path = "/home/ryan/data/human/reference/chm13v2.0.fa"
-
-    input_directory = "/home/ryan/code/hapslap/data/test/hprc/"
-
-    data_per_sample = defaultdict(dict)
-
-    for filename in os.listdir(input_directory):
-        path = os.path.join(input_directory, filename)
-
-        for name in sample_names:
-            if name in filename:
-                if filename.endswith(".bam"):
-                    data_per_sample[name]["bam"] = path
-                if filename.endswith(".vcf.gz"):
-                    data_per_sample[name]["vcf"] = path
-
-    vcf_paths = list()
-    bam_paths = list()
-
-    for name in data_per_sample:
-        has_vcf = False
-        has_bam = False
-
-        if "vcf" in data_per_sample[name]:
-            has_vcf = True
-            vcf_paths.append(data_per_sample[name]["vcf"])
-        if "bam" in data_per_sample[name]:
-            has_bam = True
-            bam_paths.append(data_per_sample[name]["bam"])
-
-        if (not has_vcf) or (not has_bam):
-            exit("ERROR: sample does not have both a BAM and a VCF")
-
-        print(name)
-        print("vcf", data_per_sample[name]["vcf"])
-        print("bam", data_per_sample[name]["bam"])
 
     tokenator = GoogleToken()
 
@@ -1084,6 +1080,13 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
         ref_stop=ref_stop,
         ref_sample_name=ref_sample_name,
         flank_length=flank_length)
+
+    if len(alleles) == 1:
+        if alleles[0].is_left_flank and alleles[0].is_right_flank:
+            sys.stderr.write("WARNING: no alt alleles found. Skipping region: %s\n" % region_string)
+            return "No alt alleles in region\n"
+        else:
+            raise Exception("ERROR: impossible configuration of alleles, len=1 and not flank")
 
     alleles_output_path = os.path.join(output_directory,"alleles.csv")
     with open(alleles_output_path, 'w') as file:
@@ -1159,9 +1162,6 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
         ref_color=ref_color,
         sample_color=sample_color,
         output_path=plot_path)
-
-    # Enumerate paths
-    # enumerate_paths(alleles=alleles, graph=graph, output_directory=output_directory)
 
     output_fasta_path = os.path.join(output_directory, "reads.fasta")
 
@@ -1363,9 +1363,6 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
         avg_edit_distance = total/n
         histogram.update(avg_edit_distance)
 
-    # for key,value in path_to_read_costs.items():
-    #     print(key,value)
-
     # Filter edges in model that have unreasonably large costs
     for key in list(path_to_read_costs.keys()):
         if path_to_read_costs[key] > max_path_to_read_cost:
@@ -1388,10 +1385,6 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
     # Make a duplicate of the sample->read mapping, using ids instead of names
     sample_id_to_read_ids = dict()
     for sample_name,read_names in sample_to_reads.items():
-        # # Sometimes a read may not be in the id_map, because the id_map is generated only using reads that
-        # # were aligned in the BAM of reads-to-path. We skip any read that doesn't appear in the mappings.
-        # read_ids = set(filter(None,[read_id_map.get_id(x) for x in read_names]))
-
         read_ids = [read_id_map.get_id(x) for x in read_names]
 
         sample_id = sample_id_map.get_id(sample_name)
@@ -1470,9 +1463,17 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
     c_norm_min = None
 
     for n,cache in results.items():
+        # Normalize the range of outputs for n and c if a range exists
         # A constant of 1 is added to make the c_norm more impactful on total distance from utopia point
-        c_norm = float(cache.cost_a - c_start) / float(c_stop - c_start) + 1
-        n_norm = (float(n) - n_start) / float(n_stop - n_start) + 0.001
+        if c_stop == c_start:
+            c_norm = c_start
+        else:
+            c_norm = float(cache.cost_a - c_start) / float(c_stop - c_start) + 1
+
+        if n_stop == n_start:
+            n_norm = n_start
+        else:
+            n_norm = (float(n) - n_start) / float(n_stop - n_start) + 0.001
 
         distance = math.sqrt((c_norm-c_target)**2 + (n_norm-n_target)**2)
         if distance < d_min:
@@ -1485,20 +1486,15 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
             n_norm_min = n_norm
             c_norm_min = c_norm
 
-        # axes[0].scatter(n, cache.cost_a, color="C0")
         axes.scatter(n_norm, c_norm, color="C0")
         axes.plot([n_target,n_norm], [c_target,c_norm], color="gray")
         axes.text(n_norm, c_norm, "%.4f" % distance)
 
     best_result = results[n_min]
 
-    # axes[0].plot(n_min, c_min, color="C1", marker='o', markerfacecolor='none', markersize=6)
-    # axes[0].text(n_min, c_min, "n=%d" % n_min, color="red", ha='right', va='top')
-
     axes.plot(n_norm_min, c_norm_min, color="C1", marker='o', markerfacecolor='none', markersize=6)
     axes.text(n_norm_min, c_norm_min, "n=%d" % n_min, color="red", ha='right', va='top')
 
-    # axes.set_aspect('equal', 'box')
     axes.set_title("Results for %s" % region_string)
     axes.set_xlabel("n_norm")
     axes.set_ylabel("c_norm")
@@ -1510,36 +1506,10 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
     with open(summary_path, 'w') as file:
         file.write(summary_string)
 
+    # Before writing the final output alleles, trim the flanking sequence (to make evaluation simpler)
+    trim_flanks_from_ref_alleles(alleles, flank_length)
+
     counter = defaultdict(int)
-
-    # Get start and stop nodes
-    start_node = None
-    stop_node = None
-
-    for i in range(len(alleles)):
-        if alleles[i].is_left_flank:
-            start_node = i
-
-        if alleles[i].is_right_flank:
-            stop_node = i
-
-    print("Trimming start and stop nodes: %d %d " % (start_node,stop_node))
-    # Trim flanks off the allele sequences
-    s_start = alleles[start_node].sequence
-    l_start = len(s_start)
-    s_start = s_start[flank_length:]
-
-    s_stop = alleles[stop_node].sequence
-    l_stop = len(s_stop)
-    s_stop = s_stop[:(l_stop - flank_length)]
-
-    print("before trimming: ", l_start)
-    print("after trimming: ", len(s_start))
-    print("before trimming: ", l_stop)
-    print("after trimming: ", len(s_stop))
-
-    alleles[start_node].sequence = s_start
-    alleles[stop_node].sequence = s_stop
 
     assigned_haplotypes_path = os.path.join(output_directory, "assigned_haplotypes.fasta")
     with open(assigned_haplotypes_path, 'w') as file:
@@ -1575,89 +1545,144 @@ def infer_haplotypes(chromosome, ref_start, ref_stop, sample_names):
     return summary_string
 
 
-def main():
+class Region:
+    def __init__(self, chromosome_name, start, stop):
+        self.contig_name = chromosome_name
+        self.start = start
+        self.stop = stop
 
-    sample_names = [
-        "HG002",
-        "HG00438",
-        "HG005",
-        "HG00621",
-        "HG00673",
-        "HG00733",
-        "HG00735",
-        "HG00741",
-        "HG01071",
-        "HG01106",
-        "HG01109",
-        "HG01123",
-        "HG01175",
-        "HG01243",
-        "HG01258",
-        "HG01358",
-        "HG01361",
-        "HG01891",
-        "HG01928",
-        "HG01952",
-        "HG01978",
-        "HG02055",
-        "HG02080",
-        "HG02109",
-        "HG02145",
-        "HG02148",
-        "HG02257",
-        "HG02486",
-        "HG02559",
-        "HG02572",
-        "HG02622",
-        "HG02630",
-        "HG02717",
-        "HG02723",
-        "HG02818",
-        "HG02886",
-        "HG03098",
-        "HG03453",
-        "HG03486",
-        "HG03492",
-        "HG03516",
-        "HG03540",
-        "HG03579",
-        "NA18906",
-        "NA19240",
-        "NA20129",
-        "NA21309"
-    ]
+    def __str__(self):
+        return "%s_%d-%d" % (self.contig_name, self.start, self.stop)
 
-    chromosome = "chr20"
 
-    coords = [
-        [10437604,10440525],
-        [18259924,18261835],
-        # [54975152,54976857], # Nightmare region (tandem)
-        [18689217,18689256],
-        [18828383,18828733],
-        [47475093,47475817],
-        [49404497,49404943],
-        [55000754,55000852],
-        [55486867,55492722],
-        [7901318,7901522]
-    ]
+def parse_bed_regions(bed_path):
+    regions = list()
+    with open(bed_path, 'r') as file:
+        for l,line in enumerate(file):
+            tokens = line.strip().split('\t')
+            chromosome = tokens[0]
+            start = int(tokens[1])
+            stop = int(tokens[2])
+
+            regions.append(Region(chromosome, start, stop))
+
+    return regions
+
+
+def write_config_to_json(bed_path, sample_names, ref_path, input_directory, output_directory, json_path):
+    config = dict()
+
+    config["bed_path"] = bed_path
+    config["sample_names"] = sample_names
+    config["ref_path"] = ref_path
+    config["input_directory"] = input_directory
+    config["output_directory"] = output_directory
+
+    with open(json_path, 'w') as file:
+        file.write(json.dumps(config, indent=4))
+        file.write('\n')
+
+
+def read_config_from_json(json_path):
+    with open(json_path, 'r') as file:
+        config = json.load(file)
+
+    bed_path = config["bed_path"]
+    sample_names = config["sample_names"]
+    ref_path = config["ref_path"]
+    input_directory = config["input_directory"]
+    output_directory = config["output_directory"]
+
+    print(type(bed_path),bed_path)
+    print(type(sample_names),sample_names)
+    print(type(ref_path),ref_path)
+    print(type(input_directory),input_directory)
+    print(type(output_directory),output_directory)
+
+    return bed_path, sample_names, ref_path, input_directory
+
+
+def main(json_path): # bed_path, sample_names, ref_path, input_directory, output_directory):
+    output_directory = "/home/ryan/data/test_hapslap/test_refactor/"
+
+    if not os.path.exists(output_directory):
+        os.makedirs(output_directory)
+    else:
+        exit("ERROR: output directory exists already: %s" % output_directory)
+
+    bed_path, sample_names, ref_path, input_directory = read_config_from_json(json_path)
+    json_log_path = os.path.join(output_directory, "config.json")
+    write_config_to_json(bed_path, sample_names, ref_path, input_directory, output_directory, json_log_path)
+
+    data_per_sample = defaultdict(dict)
+
+    for filename in os.listdir(input_directory):
+        path = os.path.join(input_directory, filename)
+
+        for name in sample_names:
+            if name in filename:
+                if filename.endswith(".bam"):
+                    data_per_sample[name]["bam"] = path
+                if filename.endswith(".vcf.gz"):
+                    data_per_sample[name]["vcf"] = path
+
+    vcf_paths = list()
+    bam_paths = list()
+
+    for name in data_per_sample:
+        has_vcf = False
+        has_bam = False
+
+        if "vcf" in data_per_sample[name]:
+            has_vcf = True
+            vcf_paths.append(data_per_sample[name]["vcf"])
+        if "bam" in data_per_sample[name]:
+            has_bam = True
+            bam_paths.append(data_per_sample[name]["bam"])
+
+        if (not has_vcf) or (not has_bam):
+            exit("ERROR: sample does not have both a BAM and a VCF")
+
+        print(name)
+        print("vcf", data_per_sample[name]["vcf"])
+        print("bam", data_per_sample[name]["bam"])
+
+    regions = parse_bed_regions(bed_path)
 
     summary_strings = list()
-    for ref_start, ref_stop in coords:
+    for region in regions:
         summary_string = infer_haplotypes(
-            chromosome=chromosome,
-            ref_start=ref_start,
-            ref_stop=ref_stop,
-            sample_names=sample_names
+            ref_path=ref_path,
+            bam_paths=bam_paths,
+            vcf_paths=vcf_paths,
+            chromosome=region.contig_name,
+            ref_start=region.start,
+            ref_stop=region.stop,
+            sample_names=sample_names,
+            output_directory=output_directory
         )
 
         summary_strings.append(summary_string)
 
+    # Group all the results into one message at the end of the output
     for s in range(len(summary_strings)):
-        sys.stderr.write(str(coords[s]))
+        sys.stderr.write(str(regions[s]))
         sys.stderr.write('\n')
         sys.stderr.write(summary_strings[s])
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--json",
+        required=True,
+        type=str,
+        help="Input json containing relevant variables to be used during run. Please see repository data/template.json for details"
+    )
+
+    args = parser.parse_args()
+
+    main(
+        json_path=args.json,
+    )
