@@ -115,6 +115,7 @@ def get_query_coord_of_ref_coord(alignment, ref_start, ref_stop):
     # print(alignment.query_name, alignment.infer_query_length())
     for cigar_ref_start,cigar_ref_stop,cigar_query_start,cigar_query_stop,operation,length in iterate_cigar(alignment):
         # print('r',cigar_ref_start,cigar_ref_stop,'q',cigar_query_start,cigar_query_stop, alignment.is_reverse)
+        # print(query_start,cigar_ref_start,cigar_ref_stop,query_stop,cigar_index_to_char[operation],length)
 
         # Ref decreases, query increases
         if alignment.is_reverse:
@@ -142,10 +143,15 @@ def iter_query_sequences_of_region(bam_path, chromosome, ref_start, ref_stop):
     sam = pysam.AlignmentFile(bam_path)
 
     for alignment in sam.fetch(contig=chromosome, start=ref_start, stop=ref_stop):
+        if alignment.is_secondary or alignment.is_unmapped or alignment.mapping_quality < 5:
+            continue
+
         query_start, query_stop = get_query_coord_of_ref_coord(
             alignment=alignment,
             ref_start=ref_start,
             ref_stop=ref_stop)
+
+        # print(query_start,query_stop,alignment.is_reverse,alignment.query_name,alignment.is_supplementary)
 
         # If we want to use the sequence field of the BAM, we annoyingly have to reconvert back to forward
         # reference orientation because the BAM will store only the forward reference oriented sequence even if the
