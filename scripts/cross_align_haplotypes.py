@@ -1,24 +1,23 @@
-from pywfa import WavefrontAligner
-import edlib
-
 from modules.IncrementalIdMap import IncrementalIdMap
-from modules.Align import run_minimap2
 from modules.IterativeHistogram import IterativeHistogram
+from modules.Cigar import iter_query_sequences_of_region
+from modules.Bam import get_region_from_bam,index_bam
+from modules.Authenticator import *
 
-from collections import defaultdict
 from itertools import combinations
 from multiprocessing import Pool
+from pathlib import Path
 from glob import glob
-from copy import copy
 import numpy
 import os
 import re
 
 from matplotlib import pyplot,colors
-from edlib import align
-import networkx
-
+from pywfa import WavefrontAligner
 import matplotlib
+import networkx
+import pandas
+
 matplotlib.use('Agg')
 
 
@@ -415,34 +414,152 @@ def evaluate_upper_bound():
         pyplot.close('all')
 
 
+def download_chromosome_of_bam(chromosome, tsv_path, column_names, output_directory, n_threads, samples=None):
+    token = GoogleToken()
+    index_threads = 1
+
+    output_directory = os.path.abspath(output_directory)
+
+    if not os.path.exists(output_directory):
+        os.makedirs(output_directory)
+
+    df = pandas.read_table(tsv_path, sep='\t', header=0)
+
+    n_rows, n_cols = df.shape
+
+    print(n_rows)
+
+    args = list()
+
+    if samples is not None:
+        samples = set(samples)
+
+    for column_name in column_names:
+        for i in range(n_rows):
+            sample_name = df.iloc[i][0]
+
+            if samples is not None and sample_name not in samples:
+                continue
+
+            print(sample_name)
+
+            gs_uri = df.iloc[i][column_name]
+
+            # Each sample downloads its regions to its own subdirectory to prevent overwriting (filenames are by region)
+            output_subdirectory = os.path.join(output_directory, sample_name)
+
+            if not os.path.exists(output_subdirectory):
+                os.makedirs(output_subdirectory)
+
+            filename = sample_name + "_" + column_name + "_" + chromosome + ".bam"
+            args.append([output_subdirectory,gs_uri,chromosome,token,600,filename])
+
+    with Pool(n_threads) as pool:
+        download_results = pool.starmap(get_region_from_bam, args)
+
+    return download_results
+
+
+def iter_haplotypes_of_region(bam_paths, chromosome, start, stop, index_threads=1):
+
+    for path in bam_paths:
+        print(path)
+
+        suffix = None
+
+        if "hap1" in path:
+            suffix = "hap1"
+
+        elif "hap2" in path:
+            suffix = "hap2"
+
+        else:
+            raise Exception("ERROR: 'hap1' or 'hap2' not in file name, unparsable: " + path)
+
+        print(suffix)
+
+        index_path = path + ".bai"
+
+        if not os.path.exists(index_path):
+            index_bam(path, index_threads)
+
+        iter = iter_query_sequences_of_region(bam_path=path, chromosome=chromosome, ref_start=start, ref_stop=stop)
+        for query_name, is_reverse, query_start, query_stop, seq in iter:
+            s = Sequence(query_name, seq.upper())
+            s.normalize_name()
+
+            yield s
+
+
 def evaluate_test_haplotypes():
     n_threads = 30
     distance_threshold = 25
 
-    output_dir = "/home/ryan/data/test_hapslap/evaluation/"
+    output_dir = "/home/ryan/data/test_hapslap/evaluation/test_refactor/"
+    tsv_path = "/home/ryan/data/test_hapslap/terra/hprc_sandbox/subsample.tsv"
+    column_names = ["bam_hap1_vs_chm13","bam_hap2_vs_chm13"]
+    chromosome = "chr20"
+
+    input_directory = Path("/home/ryan/data/test_hapslap/results/")
+    test_dirs = [str(f) for f in input_directory.iterdir() if f.is_dir()]
+
+    print(test_dirs)
+
+    aligned_hap_directory = os.path.join(output_dir, "aligned_haps")
+    bam_paths = download_chromosome_of_bam(
+        chromosome=chromosome,
+        tsv_path=tsv_path,
+        column_names=column_names,
+        output_directory=aligned_hap_directory,
+        n_threads=n_threads
+    )
+
+    # paths = [
+    #     # ["/home/ryan/data/test_hapslap/regional_haplotypes/haplotypes_chr20_4865820-4866980.fasta","/home/ryan/data/test_hapslap/results/chr20_4865820-4866980/assigned_haplotypes.fasta"],
+    #     # ["/home/ryan/data/test_hapslap/regional_haplotypes/haplotypes_chr20_5339287-5339435.fasta","/home/ryan/data/test_hapslap/results/chr20_5339287-5339435/assigned_haplotypes.fasta"],
+    #     # ["/home/ryan/data/test_hapslap/regional_haplotypes/haplotypes_chr20_5351560-5351629.fasta","/home/ryan/data/test_hapslap/results/chr20_5351560-5351629/assigned_haplotypes.fasta"],
+    #     # ["/home/ryan/data/test_hapslap/regional_haplotypes/haplotypes_chr20_16978970-16979138.fasta","/home/ryan/data/test_hapslap/results/chr20_16978970-16979138/assigned_haplotypes.fasta"],
+    #     # ["/home/ryan/data/test_hapslap/regional_haplotypes/haplotypes_chr20_39272745-39276089.fasta","/home/ryan/data/test_hapslap/results/chr20_39272745-39276089/assigned_haplotypes.fasta"],
+    #     # ["/home/ryan/data/test_hapslap/regional_haplotypes/haplotypes_chr20_43009391-43010760.fasta","/home/ryan/data/test_hapslap/results/chr20_43009391-43010760/assigned_haplotypes.fasta"],
+    #     # ["/home/ryan/data/test_hapslap/regional_haplotypes/haplotypes_chr20_45130317-45130465.fasta","/home/ryan/data/test_hapslap/results/chr20_45130317-45130465/assigned_haplotypes.fasta"],
+    #     # ["/home/ryan/data/test_hapslap/regional_haplotypes/haplotypes_chr20_46412345-46416772.fasta","/home/ryan/data/test_hapslap/results/chr20_46412345-46416772/assigned_haplotypes.fasta"],
+    #     # ["/home/ryan/data/test_hapslap/regional_haplotypes/haplotypes_chr20_55936795-55936884.fasta","/home/ryan/data/test_hapslap/results/chr20_55936795-55936884/assigned_haplotypes.fasta"],
+    #     # ["/home/ryan/data/test_hapslap/regional_haplotypes/haplotypes_chr20_57634553-57641082.fasta","/home/ryan/data/test_hapslap/results/chr20_57634553-57641082/assigned_haplotypes.fasta"],
+    #     # ["/home/ryan/data/test_hapslap/regional_haplotypes/haplotypes_chr20_63957473-63957621.fasta","/home/ryan/data/test_hapslap/results/chr20_63957473-63957621/assigned_haplotypes.fasta"],
+    #     # Assorted
+    #     ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_7901318-7901522.fasta","/home/ryan/data/test_hapslap/test_refactor/chr20_7901318-7901522/assigned_haplotypes.fasta"],
+    #     ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_10437604-10440525.fasta","/home/ryan/data/test_hapslap/test_refactor/chr20_10437604-10440525/assigned_haplotypes.fasta"],
+    #     ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_18259924-18261835.fasta","/home/ryan/data/test_hapslap/test_refactor/chr20_18259924-18261835/assigned_haplotypes.fasta"],
+    #     ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_18689217-18689256.fasta","/home/ryan/data/test_hapslap/test_refactor/chr20_18689217-18689256/assigned_haplotypes.fasta"],
+    #     ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_18828383-18828733.fasta","/home/ryan/data/test_hapslap/test_refactor/chr20_18828383-18828733/assigned_haplotypes.fasta"],
+    #     ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_47475093-47475817.fasta","/home/ryan/data/test_hapslap/test_refactor/chr20_47475093-47475817/assigned_haplotypes.fasta"],
+    #     ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_49404497-49404943.fasta","/home/ryan/data/test_hapslap/test_refactor/chr20_49404497-49404943/assigned_haplotypes.fasta"],
+    #     ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_55000754-55000852.fasta","/home/ryan/data/test_hapslap/test_refactor/chr20_55000754-55000852/assigned_haplotypes.fasta"],
+    #     ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_55486867-55492722.fasta","/home/ryan/data/test_hapslap/test_refactor/chr20_55486867-55492722/assigned_haplotypes.fasta"],
+    #     ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_54975152-54976857.fasta","/home/ryan/data/test_hapslap/test_refactor/chr20_54975152-54976857/assigned_haplotypes.fasta"]
+    # ]
+
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    paths = [
-        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_7901318-7901522.fasta","/home/ryan/data/test_hapslap/results/chr20_7901318-7901522/assigned_haplotypes.fasta"],
-        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_10437604-10440525.fasta","/home/ryan/data/test_hapslap/results/chr20_10437604-10440525/assigned_haplotypes.fasta"],
-        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_18259924-18261835.fasta","/home/ryan/data/test_hapslap/results/chr20_18259924-18261835/assigned_haplotypes.fasta"],
-        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_18689217-18689256.fasta","/home/ryan/data/test_hapslap/results/chr20_18689217-18689256/assigned_haplotypes.fasta"],
-        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_18828383-18828733.fasta","/home/ryan/data/test_hapslap/results/chr20_18828383-18828733/assigned_haplotypes.fasta"],
-        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_47475093-47475817.fasta","/home/ryan/data/test_hapslap/results/chr20_47475093-47475817/assigned_haplotypes.fasta"],
-        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_49404497-49404943.fasta","/home/ryan/data/test_hapslap/results/chr20_49404497-49404943/assigned_haplotypes.fasta"],
-        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_55000754-55000852.fasta","/home/ryan/data/test_hapslap/results/chr20_55000754-55000852/assigned_haplotypes.fasta"],
-        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_55486867-55492722.fasta","/home/ryan/data/test_hapslap/results/chr20_55486867-55492722/assigned_haplotypes.fasta"]
-    ]
+    for test_dir in test_dirs:
+        start,stop = test_dir.split('/')[-1].replace(".fasta","").split('_')[-1].split('-')
+        test_path = os.path.join(test_dir, "assigned_haplotypes.fasta")
 
-    for ref_path,test_path in paths:
-        print(ref_path)
-        print(test_path)
+        start = int(start)
+        stop = int(stop)
 
         id_map = IncrementalIdMap()
 
-        ref_sequences = {x.name:x for x in iterate_fasta(ref_path)}
+        ref_iter = iter_haplotypes_of_region(bam_paths=bam_paths, chromosome=chromosome, start=start, stop=stop, index_threads=4)
+
+        ref_sequences = {x.name:x for x in ref_iter}
         test_sequences = {x.name:x for x in iterate_fasta(test_path)}
+
+        print(test_dir)
+        print(start)
+        print(stop)
+        # exit()
 
         duplicated_homozygous_haps = set()
         test_sequences,test_duplicated = duplicate_homozygous_haps(test_sequences)
@@ -528,7 +645,8 @@ def evaluate_test_haplotypes():
 
         networkx.draw(graph,pos,alpha=0.6,node_color=colors_list,node_size=20)
 
-        output_path = os.path.join(output_dir,os.path.basename(ref_path).replace(".fasta", "_graph.png"))
+        prefix = chromosome + "_" + str(start) + "-" + str(stop)
+        output_path = os.path.join(output_dir,prefix + "_graph.png")
         fig.savefig(output_path, dpi=200, bbox_inches='tight')
         pyplot.close('all')
 
@@ -554,8 +672,8 @@ def evaluate_test_haplotypes():
         axes.set_ylabel("Frequency (#)")
         axes.set_title("Distances in local all-vs-all ref HPRC alignment")
 
-        histogram_path = os.path.join(output_dir,os.path.basename(ref_path).replace(".fasta", "_histogram.png"))
-        fig.savefig(histogram_path, dpi=200, bbox_inches='tight')
+        output_path = os.path.join(output_dir,prefix + "_histogram.png")
+        fig.savefig(output_path, dpi=200, bbox_inches='tight')
 
         pyplot.close('all')
 
@@ -605,7 +723,7 @@ def evaluate_test_haplotypes():
 
         networkx.draw(graph,pos,alpha=0.6,node_color=colors_list,linewidths=0,width=0.5,node_size=20)
 
-        output_path = os.path.join(output_dir,os.path.basename(ref_path).replace(".fasta", "_graph_with_test_sequence.png"))
+        output_path = os.path.join(output_dir,prefix + "_graph_with_test_sequence.png")
         fig.savefig(output_path, dpi=200, bbox_inches='tight')
         pyplot.close('all')
 
@@ -644,14 +762,15 @@ def evaluate_test_haplotypes():
                 label.set_color("blue")
 
         pyplot.tight_layout()
-        output_path = os.path.join(output_dir,os.path.basename(ref_path).replace(".fasta", "_confusion.png"))
+
+        output_path = os.path.join(output_dir,prefix + "_confusion.png")
         fig.savefig(output_path, dpi=500, bbox_inches='tight')
         pyplot.close('all')
 
 
 def main():
     evaluate_test_haplotypes()
-    evaluate_upper_bound()
+    # evaluate_upper_bound()
     # write_formatted_alignments_per_sample()
 
 
