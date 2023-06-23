@@ -1,5 +1,6 @@
 from collections import defaultdict
-import os.path
+import sys
+import os
 
 import pysam
 from pysam import AlignedSegment
@@ -92,8 +93,12 @@ def iterate_cigar(alignment: AlignedSegment):
         query_start = 0
 
     for operation,length in cigar_operations:
+        # if alignment.query_name == "HG01258#1#JAGYYV010000051.1":
+        #     print(alignment.reference_start, operation, cigar_index_to_char[operation], length)
+
         ref_stop = ref_start + length*(1-2*int(alignment.is_reverse))*is_ref_move[operation]
         query_stop = query_start + length*is_query_move[operation]
+
         yield ref_start,ref_stop,query_start,query_stop,operation,length
 
         if is_ref_move[operation]:
@@ -107,49 +112,190 @@ def iterate_cigar(alignment: AlignedSegment):
 This will get the coordinates of the query sequence in the coordinate space and orientation of the original query 
 sequence, NOT the ref-forward-reoriented query sequence which is stored in the BAM/SAM.
 """
-def get_query_coord_of_ref_coord(alignment, ref_start, ref_stop):
+def get_query_coord_of_ref_coord(alignment, ref_start, ref_stop, offset_by_hardclip=False):
     query_start = None
     query_stop = None
+    first_valid_coord = None
+    last_valid_coord = None
 
-    # print()
-    # print(alignment.query_name, alignment.infer_query_length())
+    # hardclip_length = 0
+    # first_operation,first_length = alignment.cigartuples[0]
+    #
+    # if first_operation == 5:
+    #     hardclip_length = first_length
+
+    hardclip_length = 0
+    has_hardclip = False
+
     for cigar_ref_start,cigar_ref_stop,cigar_query_start,cigar_query_stop,operation,length in iterate_cigar(alignment):
+        # if alignment.query_name == "HG01258#1#JAGYYV010000051.1":
+        #     print('r',cigar_ref_start,cigar_ref_stop,'q',cigar_query_start,cigar_query_stop, alignment.is_reverse)
+        #     print(operation, cigar_index_to_char[operation], length)
+
+        if not has_hardclip and operation == 5:
+            hardclip_length = length
+            has_hardclip = True
+
         # print('r',cigar_ref_start,cigar_ref_stop,'q',cigar_query_start,cigar_query_stop, alignment.is_reverse)
-        # print(query_start,cigar_ref_start,cigar_ref_stop,query_stop,cigar_index_to_char[operation],length)
+        # /chr20_64108857-64113364
 
         # Ref decreases, query increases
         if alignment.is_reverse:
+            # Cigar overlaps window bound
+            #
+            #            stop   start
+            # ref       |  |--+--|
+            # query     |--+--|
+            #         stop    start
             if cigar_ref_stop <= ref_stop <= cigar_ref_start:
+                # print("Overlaps stop target (R)")
                 query_start = cigar_query_stop - int(is_query_move[operation])*(ref_stop - cigar_ref_stop)
 
+                if is_query_move:
+                    last_valid_coord = cigar_query_start
+
+            # Cigar overlaps window bound
+            #
+            #      stop   start
+            # ref    |--+--|
+            # query     |--+--|
+            #         stop    start
             if cigar_ref_stop <= ref_start <= cigar_ref_start:
+                # print("Overlaps start target (R)")
                 query_stop = cigar_query_stop - int(is_query_move[operation])*(ref_start - cigar_ref_stop)
+
+                if is_query_move:
+                    last_valid_coord = cigar_query_stop
+
+            # Cigar is contained entirely in window bound
+            #
+            #       stop        start
+            # ref    |--+-----+--|
+            # query     |-----|
+            #         stop    start
+            if ref_stop <= cigar_ref_stop <= cigar_ref_start <= ref_start:
+                if is_query_move:
+                    if first_valid_coord is None:
+                        first_valid_coord = cigar_query_start
+
+                    last_valid_coord = cigar_query_stop
+
+            # Cigar contains entire window
+            #
+            #      stop     start
+            # ref      |--+--|
+            # query  |-+-----+--|
+            #     stop        start
+            if cigar_ref_start <= ref_start <= ref_stop <= cigar_ref_stop and is_query_move:
+                query_start = cigar_query_start + (cigar_ref_start - ref_start)
+                query_stop = cigar_query_stop - (ref_stop - cigar_ref_stop)
 
         # Ref increases, query increases
         else:
+            # Cigar overlaps window bound
+            #
+            #            start   stop
+            # ref       |  |--+--|
+            # query     |--+--|
+            #        start   stop
             if cigar_ref_start <= ref_start <= cigar_ref_stop:
+                # print("Overlaps start target")
                 query_start = cigar_query_start + int(is_query_move[operation])*(ref_start - cigar_ref_start)
 
+                if is_query_move:
+                    last_valid_coord = cigar_query_stop
+
+            # Cigar overlaps window bound
+            #
+            #      start   stop
+            # ref    |--+--|  |
+            # query     |--+--|
+            #         start    stop
+            #
             if cigar_ref_start <= ref_stop <= cigar_ref_stop:
+                # print("Overlaps stop target")
                 query_stop = cigar_query_start + int(is_query_move[operation])*(ref_stop - cigar_ref_start)
 
+                if is_query_move:
+                    last_valid_coord = cigar_query_start
+
+            # Cigar is contained entirely in window bound
+            #
+            #       start        stop
+            # ref    |--+-----+--|
+            # query     |-----|
+            #         start    stop
+            if ref_start <= cigar_ref_start <= cigar_ref_stop <= ref_stop:
+                if is_query_move:
+                    if first_valid_coord is None:
+                        first_valid_coord = cigar_query_start
+
+                    last_valid_coord = cigar_query_stop
+
+            # Cigar contains entire window
+            #
+            #      start     stop
+            # ref      |--+--|
+            # query  |-+-----+--|
+            #     start        stop
+            if cigar_ref_start <= ref_start <= ref_stop <= cigar_ref_stop and is_query_move:
+                print(cigar_index_to_char[operation], length, cigar_ref_start, cigar_ref_stop, ref_start, ref_stop)
+                print("Cigar contains window")
+                query_start = cigar_query_start + (ref_start - cigar_ref_start)
+                query_stop = cigar_query_stop - (cigar_ref_stop - ref_stop)
+
+        # If the alignment fully covers the window, we stop as soon as both bounds are reached
         if query_start is not None and query_stop is not None:
             break
+
+    # This line may be reached even if the window is not fully covered, in which case we return the last visited coords
+    # for whichever direction was not finished
+    if query_start is None and query_stop is not None:
+        print("case A")
+        query_start = last_valid_coord
+
+    if query_stop is None and query_start is not None:
+        print("case B")
+        query_stop = last_valid_coord
+
+    if query_start is None and query_stop is None:
+        print("case C")
+        query_start = first_valid_coord
+        query_stop = last_valid_coord
+
+    if offset_by_hardclip:
+        query_start += hardclip_length
+        query_stop += hardclip_length
 
     return query_start,query_stop
 
 
 def iter_query_sequences_of_region(bam_path, chromosome, ref_start, ref_stop):
     sam = pysam.AlignmentFile(bam_path)
+    print(bam_path)
+
+    # Need to track multiple alignment records in cases of supplementaries:
+    sequence_coords = defaultdict(lambda: [sys.maxsize,0])
+    sequences = dict()
+    reversal = dict()
 
     for alignment in sam.fetch(contig=chromosome, start=ref_start, stop=ref_stop):
         if alignment.is_secondary or alignment.is_unmapped or alignment.mapping_quality < 5:
             continue
 
+        query_name = alignment.query_name
+
+        # Only store the sequence if it is primary (assuming there are hardclips that will mess up the sequence)
+        # TODO: just check if it's hardclipped manually to save time in the case where the BAM was aligned without HCs
+        if not alignment.is_supplementary:
+            sequences[query_name] = alignment.query_sequence
+
         query_start, query_stop = get_query_coord_of_ref_coord(
             alignment=alignment,
             ref_start=ref_start,
-            ref_stop=ref_stop)
+            ref_stop=ref_stop,
+            offset_by_hardclip=True
+        )
 
         # print(query_start,query_stop,alignment.is_reverse,alignment.query_name,alignment.is_supplementary)
 
@@ -158,13 +304,46 @@ def iter_query_sequences_of_region(bam_path, chromosome, ref_start, ref_stop):
         # query is a reverse strand read
         seq = alignment.query_sequence
         if alignment.is_reverse:
-            start = len(seq) - query_stop
-            stop = len(seq) - query_start
-            seq = seq[start:stop]
-        else:
-            seq = seq[query_start:query_stop]
+            l = 0
+            if not alignment.is_supplementary:
+                l = len(seq)
+            else:
+                l = alignment.infer_read_length()
 
-        yield alignment.query_name, alignment.is_reverse, query_start, query_stop, seq
+            start = l - query_stop
+            stop = l - query_start
+
+            print(start,stop)
+            sequence_coords[query_name][0] = min(start,sequence_coords[query_name][0])
+            sequence_coords[query_name][1] = max(stop,sequence_coords[query_name][1])
+            reversal[query_name] = True
+        else:
+            print(query_start,query_stop)
+            sequence_coords[query_name][0] = min(query_start,sequence_coords[query_name][0])
+            sequence_coords[query_name][1] = max(query_stop,sequence_coords[query_name][1])
+            reversal[query_name] = False
+
+        # yield alignment.query_name, alignment.is_reverse, query_start, query_stop, seq
+
+    # It may be that we never iterated the primary sequence, and therefore don't have the unclipped version of it...
+    remaining_sequences = set(sequence_coords.keys()) - set(sequences.keys())
+
+    sam = pysam.AlignmentFile(bam_path)
+
+    # Iterate every alignment to find it... :(
+    for alignment in sam:
+        if not alignment.is_secondary and not alignment.is_supplementary:
+            if alignment.query_name in remaining_sequences:
+                sequences[alignment.query_name] = alignment.query_sequence
+
+    # Finally iterate the coordinates that were covered by this region and extract them
+    for name,[start,stop] in sequence_coords.items():
+        s = sequences[name][start:stop]
+        r = reversal[name]
+
+        print(name, start, stop, stop-start, r)
+
+        yield name, r, start, stop, s
 
 
 def print_formatted_alignment_of_query(ref_path, query_path, sam_path, output_directory):

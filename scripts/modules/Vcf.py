@@ -125,7 +125,7 @@ def get_alleles_from_vcfs(ref_path, vcf_paths, chromosome, ref_start=None, ref_s
                         if sequence.strip() == "<DUP>":
                             sequence = ref_sequence[start:start+b_length+1]
                         elif sequence.strip() == "<INV>":
-                            sequence = reversed(ref_sequence[start:start+b_length+1])
+                            sequence = ref_sequence[start:start+b_length+1][::-1]
                         elif sequence == 'N':
                             sequence = ''
                         else:

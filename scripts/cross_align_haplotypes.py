@@ -9,6 +9,7 @@ from multiprocessing import Pool
 from pathlib import Path
 from glob import glob
 import numpy
+import sys
 import os
 import re
 
@@ -109,7 +110,7 @@ def get_indel_distance_from_tuples(cigar_tuples):
 
 
 def align_and_get_indel_distance(a:Sequence,b:Sequence,output_dir=None):
-    aligner = WavefrontAligner()
+    aligner = WavefrontAligner(heuristic="adaptive")
 
     aligner(a.sequence,b.sequence)
     d = get_indel_distance_from_tuples(aligner.cigartuples)
@@ -198,7 +199,7 @@ def write_sample_alignments(ref_sequences, test_sequences, id_map, output_dir):
         a = sample_name + "_1"
         b = sample_name + "_2"
 
-        aligner = WavefrontAligner()
+        aligner = WavefrontAligner(heuristic="adaptive")
 
         output_path = os.path.join(output_dir, a + "_" + a + ".txt")
         aligner(ref_sequences[a].sequence,test_sequences[a].sequence)
@@ -335,7 +336,9 @@ def evaluate_upper_bound():
             d = results[i]
 
             # w = d
-            w = float(l_a + l_b - d) / float(l_a + l_b)
+            w = 0
+            if l_a + l_b > 0:
+                w = float(l_a + l_b - d) / float(l_a + l_b)
 
             id_a = ref_id_map.get_id(a)
             id_b = ref_id_map.get_id(b)
@@ -346,7 +349,7 @@ def evaluate_upper_bound():
             if id_b not in graph:
                 graph.add_node(id_b)
 
-            if d <= distance_threshold:
+            if d <= distance_threshold and w != 0:
                 graph.add_edge(id_a, id_b, weight=w)
 
         ref_labels = dict()
@@ -484,8 +487,20 @@ def iter_haplotypes_of_region(bam_paths, chromosome, start, stop, index_threads=
             index_bam(path, index_threads)
 
         iter = iter_query_sequences_of_region(bam_path=path, chromosome=chromosome, ref_start=start, ref_stop=stop)
+
+        sequences = dict()
+        query_names = set()
         for query_name, is_reverse, query_start, query_stop, seq in iter:
-            s = Sequence(query_name, seq.upper())
+            sequences[query_name] = seq
+            print(query_name, len(seq))
+            query_names.add(query_name)
+
+        if len(query_names) > 1:
+            print("WARNING: multiple query sequences in region: " + str(query_names))
+            exit()
+
+        for name,sequence in sequences.items():
+            s = Sequence(name, sequence.upper())
             s.normalize_name()
 
             yield s
@@ -495,12 +510,12 @@ def evaluate_test_haplotypes():
     n_threads = 30
     distance_threshold = 25
 
-    output_dir = "/home/ryan/data/test_hapslap/evaluation/test_refactor/"
+    output_dir = "/home/ryan/data/test_hapslap/evaluation/test_breakend/"
     tsv_path = "/home/ryan/data/test_hapslap/terra/hprc_sandbox/subsample.tsv"
     column_names = ["bam_hap1_vs_chm13","bam_hap2_vs_chm13"]
     chromosome = "chr20"
 
-    input_directory = Path("/home/ryan/data/test_hapslap/results/")
+    input_directory = Path("/home/ryan/data/test_hapslap/results_breakend/")
     test_dirs = [str(f) for f in input_directory.iterdir() if f.is_dir()]
 
     print(test_dirs)
@@ -511,7 +526,7 @@ def evaluate_test_haplotypes():
         tsv_path=tsv_path,
         column_names=column_names,
         output_directory=aligned_hap_directory,
-        n_threads=n_threads
+        n_threads=n_threads,
     )
 
     # paths = [
@@ -543,6 +558,7 @@ def evaluate_test_haplotypes():
         os.makedirs(output_dir)
 
     for test_dir in test_dirs:
+        print("Evaluating: " + test_dir)
         start,stop = test_dir.split('/')[-1].replace(".fasta","").split('_')[-1].split('-')
         test_path = os.path.join(test_dir, "assigned_haplotypes.fasta")
 
@@ -572,7 +588,12 @@ def evaluate_test_haplotypes():
         for key in list(ref_sequences.keys()):
             if key not in test_sequences:
                 print("WARNING: haplotype not in test_sequences: " + key)
-                del ref_sequences[key]
+                test_sequences[key] = Sequence(name=key, sequence="")
+
+        for key in list(test_sequences.keys()):
+            if key not in ref_sequences:
+                print("WARNING: haplotype not in ref_sequences: " + key)
+                ref_sequences[key] = Sequence(name=key, sequence="")
 
         for key in sorted(ref_sequences):
             id_map.add(key)
@@ -592,8 +613,9 @@ def evaluate_test_haplotypes():
 
             histogram.update(d)
 
-            # w = d
-            w = float(l_a + l_b - d) / float(l_a + l_b)
+            w = 0
+            if l_a + l_b > 0:
+                w = float(l_a + l_b - d) / float(l_a + l_b)
 
             id_a = id_map.get_id(a)
             id_b = id_map.get_id(b)
@@ -604,7 +626,7 @@ def evaluate_test_haplotypes():
             if id_b not in graph:
                 graph.add_node(id_b)
 
-            if d <= distance_threshold:
+            if d <= distance_threshold and w != 0:
                 graph.add_edge(id_a, id_b, weight=w)
 
         labels = dict()
@@ -640,7 +662,7 @@ def evaluate_test_haplotypes():
         for i,n in enumerate(graph.nodes):
             colors_list.append(colors[n])
 
-        pos = networkx.spring_layout(graph, weight='weight')
+        pos = networkx.spring_layout(graph, weight='weight', iterations=30, k=0.5)
         # pos = networkx.spectral_layout(graph, weight='weight')
 
         networkx.draw(graph,pos,alpha=0.6,node_color=colors_list,node_size=20)
@@ -702,15 +724,20 @@ def evaluate_test_haplotypes():
                 id_ref = id_map.get_id(name_ref)
                 id_test = id_map.get_id(name_test)
 
-                w = float(l_ref + l_test - d) / float(l_ref + l_test)
-                matrix[id_to_cluster_map[id_ref]][id_to_cluster_map[id_test]] = d
+                w = 0
+                if l_ref + l_test > 0:
+                    w = float(l_ref + l_test - d) / float(l_ref + l_test)
+
+                x = id_to_cluster_map[id_ref]
+                y = id_to_cluster_map[id_test]
+                matrix[x][y] = d
 
                 id_test += len(id_map)
 
                 if id_test not in graph:
                     graph.add_node(id_test)
 
-                if d <= distance_threshold:
+                if d <= distance_threshold and w != 0:
                     graph.add_edge(id_ref, id_test, weight=w)
 
         fig = pyplot.figure()
@@ -719,7 +746,7 @@ def evaluate_test_haplotypes():
         for i in range(len(graph.nodes)- len(id_map)) :
             colors_list.append("red")
 
-        pos = networkx.spring_layout(graph, weight='weight')
+        pos = networkx.spring_layout(graph, weight='weight', iterations=30, k=0.5)
 
         networkx.draw(graph,pos,alpha=0.6,node_color=colors_list,linewidths=0,width=0.5,node_size=20)
 
