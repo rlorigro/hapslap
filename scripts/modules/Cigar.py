@@ -121,21 +121,50 @@ def get_query_coord_of_ref_coord(alignment, ref_start, ref_stop, offset_by_hardc
     spans_ref_stop = False
 
     for cigar_ref_start,cigar_ref_stop,cigar_query_start,cigar_query_stop,operation,length in iterate_cigar(alignment):
-        # if ref_start <= cigar_ref_start <= ref_stop or ref_start <= cigar_ref_stop <= ref_stop:
-        #     print(' '.join(list(map(str,['w',ref_start,ref_stop,'r',cigar_ref_start,cigar_ref_stop,'q',cigar_query_start,cigar_query_stop,alignment.is_reverse,cigar_index_to_char[operation],length]))))
+        # print(' '.join(list(map(str,['w',ref_start,ref_stop,'r',cigar_ref_start,cigar_ref_stop,'q',cigar_query_start,cigar_query_stop,alignment.is_reverse,cigar_index_to_char[operation],length]))))
 
         if not has_hardclip and operation == 5:
             hardclip_length = length
             has_hardclip = True
 
+        in_window = False
+
         # Ref decreases, query increases
         if alignment.is_reverse:
-            if operation != 4 and operation != 5 and ref_start <= cigar_ref_start <= ref_stop:
-                if first_valid_query_coord is None:
+            # Keep track of any valid coordinates for the case when the read is not spanning
+            if ref_start <= cigar_ref_start <= ref_stop:
+                if first_valid_query_coord is None and operation != 4 and operation != 5:
                     first_valid_query_coord = cigar_query_start
 
-            if operation != 4 and operation != 5 and ref_start <= cigar_ref_stop <= ref_stop:
-                last_valid_query_coord = cigar_query_stop
+                # Use this indicator to skip unnecessary operations
+                in_window = True
+
+            # Keep track of any valid coordinates for the case when the read is not spanning
+            if ref_start <= cigar_ref_stop <= ref_stop:
+                if operation != 4 and operation != 5:
+                    last_valid_query_coord = cigar_query_stop
+
+                # Use this indicator to skip unnecessary operations
+                in_window = True
+
+            # Cigar contains entire window
+            #
+            #          stop     start
+            # ref          |-----|
+            # cigar-ref  |-+-----+--|
+            #         stop        start
+            # query   start        stop
+            if cigar_ref_stop <= ref_start <= ref_stop <= cigar_ref_start and is_query_move:
+                query_stop = cigar_query_start + (cigar_ref_start - ref_start)
+                query_start = cigar_query_stop - (ref_stop - cigar_ref_stop)
+                spans_ref_start = True
+                spans_ref_stop = True
+                break
+
+            if not in_window:
+                if ((last_valid_query_coord is not None) or (first_valid_query_coord is not None)):
+                    break
+                continue
 
             # Cigar overlaps window bound
             #
@@ -159,27 +188,41 @@ def get_query_coord_of_ref_coord(alignment, ref_start, ref_stop, offset_by_hardc
                 query_stop = cigar_query_stop - int(is_query_move[operation])*(ref_start - cigar_ref_stop)
                 spans_ref_start = True
 
-            # Cigar contains entire window
-            #
-            #          stop     start
-            # ref          |-----|
-            # cigar-ref  |-+-----+--|
-            #         stop        start
-            # query   start        stop
-            if cigar_ref_start <= ref_start <= ref_stop <= cigar_ref_stop and is_query_move:
-                query_start = cigar_query_start + (cigar_ref_start - ref_start)
-                query_stop = cigar_query_stop - (ref_stop - cigar_ref_stop)
-                spans_ref_start = True
-                spans_ref_stop = True
-
         # Ref increases, query increases
         else:
-            if operation != 4 and operation != 5 and ref_start <= cigar_ref_start <= ref_stop:
-                if first_valid_query_coord is None:
+            # Keep track of any valid coordinates for the case when the read is not spanning
+            if ref_start <= cigar_ref_start <= ref_stop:
+                if first_valid_query_coord is None and operation != 4 and operation != 5:
                     first_valid_query_coord = cigar_query_start
 
-            if operation != 4 and operation != 5 and ref_start <= cigar_ref_stop <= ref_stop:
-                last_valid_query_coord = cigar_query_stop
+                # Use this indicator to skip unnecessary operations
+                in_window = True
+
+            # Keep track of any valid coordinates for the case when the read is not spanning
+            if ref_start <= cigar_ref_stop <= ref_stop:
+                if operation != 4 and operation != 5:
+                    last_valid_query_coord = cigar_query_stop
+
+                # Use this indicator to skip unnecessary operations
+                in_window = True
+
+            # Cigar contains entire window
+            #
+            #          start     stop
+            # ref          |-----|
+            # cigar-ref  |-+-----+--|
+            #         start        stop
+            if cigar_ref_start <= ref_start <= ref_stop <= cigar_ref_stop and is_query_move:
+                query_start = cigar_query_start + (ref_start - cigar_ref_start)
+                query_stop = cigar_query_stop - (cigar_ref_stop - ref_stop)
+                spans_ref_start = True
+                spans_ref_stop = True
+                break
+
+            if not in_window:
+                if ((last_valid_query_coord is not None) or (first_valid_query_coord is not None)):
+                    break
+                continue
 
             # Cigar overlaps window bound
             #
@@ -202,24 +245,12 @@ def get_query_coord_of_ref_coord(alignment, ref_start, ref_stop, offset_by_hardc
                 query_stop = cigar_query_start + int(is_query_move[operation])*(ref_stop - cigar_ref_start)
                 spans_ref_stop = True
 
-            # Cigar contains entire window
-            #
-            #          start     stop
-            # ref          |-----|
-            # cigar-ref  |-+-----+--|
-            #         start        stop
-            if cigar_ref_start <= ref_start <= ref_stop <= cigar_ref_stop and is_query_move:
-                query_start = cigar_query_start + (ref_start - cigar_ref_start)
-                query_stop = cigar_query_stop - (cigar_ref_stop - ref_stop)
-                spans_ref_start = True
-                spans_ref_stop = True
-
-        # If the alignment fully covers the window, we stop as soon as both bounds are reached
+        # If the alignment fully covers the window, stop as soon as both bounds are reached
         if query_start is not None and query_stop is not None:
             break
 
     # This line may be reached even if the window is not fully covered, in which case we return the last visited coords
-    # for whichever direction was not finished
+    # for whichever side was not spanned
     if query_start is None and query_stop is not None:
         query_start = first_valid_query_coord
 
@@ -239,13 +270,12 @@ def get_query_coord_of_ref_coord(alignment, ref_start, ref_stop, offset_by_hardc
 
 def iter_query_sequences_of_region(bam_path, chromosome, ref_start, ref_stop, skip_non_spanning=False):
     sam = pysam.AlignmentFile(bam_path)
-    print(bam_path)
 
     # Need to track multiple alignment records in cases of supplementaries:
     sequence_coords = defaultdict(lambda: [sys.maxsize,0])
     is_spanning = defaultdict(lambda: [False,False])
+    is_reverse = defaultdict(lambda: False)
     sequences = dict()
-    reversal = dict()
 
     for alignment in sam.fetch(contig=chromosome, start=ref_start, stop=ref_stop):
         if alignment.is_secondary or alignment.is_unmapped or alignment.mapping_quality < 5:
@@ -287,27 +317,27 @@ def iter_query_sequences_of_region(bam_path, chromosome, ref_start, ref_stop, sk
             else:
                 l = alignment.infer_read_length()
 
-            print("Inferred length of read: " + str(l))
-            print("Computed length of read: " + str(sum(x[1] for x in alignment.cigartuples if x[0] == 5 or is_query_move[x[0]])))
             start = l - query_stop
             stop = l - query_start
 
-            print(query_name, start, stop, stop - start, spans_ref_start, spans_ref_stop)
+            # Extract the minimum and maximum observed query coordinates that are relevant to this ref region
+            # print(query_name, start, stop, stop - start, spans_ref_start, spans_ref_stop)
             sequence_coords[query_name][0] = min(start,sequence_coords[query_name][0])
             sequence_coords[query_name][1] = max(stop,sequence_coords[query_name][1])
-            reversal[query_name] = True
+            is_reverse[query_name] += True
         else:
-            print(query_name, query_start, query_stop, query_stop - query_start, spans_ref_start, spans_ref_stop)
+            # Extract the minimum and maximum observed query coordinates that are relevant to this ref region
+            # print(query_name, query_start, query_stop, query_stop - query_start, spans_ref_start, spans_ref_stop)
             sequence_coords[query_name][0] = min(query_start,sequence_coords[query_name][0])
             sequence_coords[query_name][1] = max(query_stop,sequence_coords[query_name][1])
-            reversal[query_name] = False
+            is_reverse[query_name] += False
 
     # Only look for the spanning reads/contigs in the alignment (if specified)
     if skip_non_spanning:
         for name in list(sequences.keys()):
             if not (is_spanning[name][0] and is_spanning[name][1]):
-                print("Skipping non-spanning sequence: " + name)
-                del reversal[name]
+                print("WARNING: skipping non-spanning sequence: " + name)
+                del is_reverse[name]
                 del sequences[name]
                 del sequence_coords[name]
 
@@ -345,7 +375,10 @@ def iter_query_sequences_of_region(bam_path, chromosome, ref_start, ref_stop, sk
     # Finally iterate the coordinates that were covered by this region and extract them
     for name,[start,stop] in sequence_coords.items():
         s = sequences[name][start:stop]
-        r = reversal[name]
+        r = is_reverse[name]
+
+        if stop < start:
+            raise Exception("ERROR: negative sequence coords obtained from %s:%d-%d in %s" % (chromosome,start,stop,bam_path))
 
         print("final sequence:", name, stop-start)
 

@@ -1,3 +1,5 @@
+import multiprocessing
+
 from modules.IncrementalIdMap import IncrementalIdMap
 from modules.IterativeHistogram import IterativeHistogram
 from modules.Cigar import iter_query_sequences_of_region
@@ -474,61 +476,61 @@ def download_chromosome_of_bam(chromosome, tsv_path, column_names, output_direct
     return download_results
 
 
-def iter_haplotypes_of_region(bam_paths, chromosome, start, stop, index_threads=1):
+def get_sample_haplotypes_of_region(bam_path, chromosome, start, stop, index_threads):
+    suffix = None
+
+    if "hap1" in bam_path:
+        suffix = "hap1"
+
+    elif "hap2" in bam_path:
+        suffix = "hap2"
+
+    else:
+        raise Exception("ERROR: 'hap1' or 'hap2' not in file name, unparsable: " + bam_path)
+
+    index_path = bam_path + ".bai"
+
+    if not os.path.exists(index_path):
+        index_bam(bam_path, index_threads)
+
+    iter = iter_query_sequences_of_region(
+        bam_path=bam_path,
+        chromosome=chromosome,
+        ref_start=start,
+        ref_stop=stop,
+        skip_non_spanning=True
+    )
+
+    sequences = list()
+    for query_name, is_reverse, query_start, query_stop, seq in iter:
+        s = Sequence(query_name + "_" + suffix, seq.upper())
+        s.normalize_name()
+        sequences.append(s)
+
+    if len(sequences) > 1:
+        print("WARNING: multiple spanning query sequences in region: " + str([x.name for x in sequences]))
+        print("arbitrarily selecting first sequence...")
+
+    return sequences[0]
+
+
+def get_haplotypes_of_region(bam_paths, chromosome, start, stop, n_threads):
+    args = list()
 
     for path in bam_paths:
-        # if "HG02486" not in path:
-        #     continue
-
         print(path)
+        args.append([path, chromosome, start, stop, True])
 
-        suffix = None
+    with Pool(n_threads) as pool:
+        results = pool.starmap(get_sample_haplotypes_of_region, args)
 
-        if "hap1" in path:
-            suffix = "hap1"
-
-        elif "hap2" in path:
-            suffix = "hap2"
-
-        else:
-            raise Exception("ERROR: 'hap1' or 'hap2' not in file name, unparsable: " + path)
-
-        print(suffix)
-
-        index_path = path + ".bai"
-
-        if not os.path.exists(index_path):
-            index_bam(path, index_threads)
-
-        iter = iter_query_sequences_of_region(
-            bam_path=path,
-            chromosome=chromosome,
-            ref_start=start,
-            ref_stop=stop,
-            skip_non_spanning=True
-        )
-
-        sequences = dict()
-        query_names = set()
-        for query_name, is_reverse, query_start, query_stop, seq in iter:
-            sequences[query_name] = seq
-            print(query_name, len(seq))
-            query_names.add(query_name)
-
-        if len(query_names) > 1:
-            print("WARNING: multiple query sequences in region: " + str(query_names))
-            exit()
-
-        for name,sequence in sequences.items():
-            s = Sequence(name, sequence.upper())
-            s.normalize_name()
-
-            yield s
+    return results
 
 
 def evaluate_test_haplotypes():
     n_threads = 30
     distance_threshold = 25
+    index_threads = 1
 
     output_dir = "/home/ryan/data/test_hapslap/evaluation/test_breakend/"
     tsv_path = "/home/ryan/data/test_hapslap/terra/hprc_sandbox/subsample.tsv"
@@ -562,14 +564,19 @@ def evaluate_test_haplotypes():
 
         id_map = IncrementalIdMap()
 
-        ref_iter = iter_haplotypes_of_region(bam_paths=bam_paths, chromosome=chromosome, start=start, stop=stop, index_threads=4)
+        results = get_haplotypes_of_region(
+            bam_paths=bam_paths,
+            chromosome=chromosome,
+            start=start,
+            stop=stop,
+            n_threads=n_threads
+        )
 
-        ref_sequences = {x.name:x for x in ref_iter}
+        ref_sequences = {x.name:x for x in results}
         test_sequences = {x.name:x for x in iterate_fasta(test_path)}
 
-        print(ref_sequences.keys())
-        print(test_sequences.keys())
-        exit()
+        print(sorted(ref_sequences.keys()))
+        print(sorted(test_sequences.keys()))
 
         duplicated_homozygous_haps = set()
         test_sequences,test_duplicated = duplicate_homozygous_haps(test_sequences)
@@ -579,9 +586,12 @@ def evaluate_test_haplotypes():
 
         print(duplicated_homozygous_haps)
 
+        missing_sequences = set()
+
         for key in list(ref_sequences.keys()):
             if key not in test_sequences:
                 print("WARNING: haplotype not in test_sequences: " + key)
+                missing_sequences.add(key)
                 test_sequences[key] = Sequence(name=key, sequence="")
 
         for key in list(test_sequences.keys()):
@@ -621,6 +631,7 @@ def evaluate_test_haplotypes():
                 graph.add_node(id_b)
 
             if d <= distance_threshold and w != 0:
+                print(a, b, d, w, l_a, l_b)
                 graph.add_edge(id_a, id_b, weight=w)
 
         labels = dict()
@@ -652,11 +663,11 @@ def evaluate_test_haplotypes():
 
         colors_list = list()
 
-        # For fucks sake what is the point of assigning a node ID if Networkx doesn't even use it as an index
+        # FFS what is the point of assigning a node ID if Networkx doesn't even use it as an index
         for i,n in enumerate(graph.nodes):
             colors_list.append(colors[n])
 
-        pos = networkx.spring_layout(graph, weight='weight', iterations=30, k=0.5)
+        pos = networkx.spring_layout(graph, weight='weight', iterations=50)
         # pos = networkx.spectral_layout(graph, weight='weight')
 
         networkx.draw(graph,pos,alpha=0.6,node_color=colors_list,node_size=20)
@@ -740,7 +751,7 @@ def evaluate_test_haplotypes():
         for i in range(len(graph.nodes)- len(id_map)) :
             colors_list.append("red")
 
-        pos = networkx.spring_layout(graph, weight='weight', iterations=30, k=0.5)
+        pos = networkx.spring_layout(graph, weight='weight', iterations=30)
 
         networkx.draw(graph,pos,alpha=0.6,node_color=colors_list,linewidths=0,width=0.5,node_size=20)
 
@@ -756,8 +767,8 @@ def evaluate_test_haplotypes():
         cumulative_count = 0
         for c in components:
             cumulative_count += len(c)
-            axes.axhline(cumulative_count - 0.5,color="red",linewidth=0.5)
-            axes.axvline(cumulative_count - 0.5,color="red",linewidth=0.5)
+            axes.axhline(cumulative_count-0.5, color="red", linewidth=0.5)
+            axes.axvline(cumulative_count-0.5, color="red", linewidth=0.5)
 
         axes.tick_params(axis='both', which='major', labelsize=3)
 
@@ -779,8 +790,13 @@ def evaluate_test_haplotypes():
 
         # For debugging purposes, color the samples which were duplicated
         for label in axes.get_xticklabels():
-            if str(label.get_text()) in duplicated_homozygous_haps:
+            s = str(label.get_text())
+
+            if s in duplicated_homozygous_haps:
                 label.set_color("blue")
+
+            if s in missing_sequences:
+                label.set_color("red")
 
         pyplot.tight_layout()
 
