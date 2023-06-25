@@ -110,9 +110,16 @@ def get_indel_distance_from_tuples(cigar_tuples):
 
 
 def align_and_get_indel_distance(a:Sequence,b:Sequence,output_dir=None):
+    if len(a) == 0 or len(b) == 0:
+        return max(len(a),len(b))
+
     aligner = WavefrontAligner(heuristic="adaptive")
 
     aligner(a.sequence,b.sequence)
+
+    if aligner.status != 0:
+        return max(len(a),len(b))
+
     d = get_indel_distance_from_tuples(aligner.cigartuples)
 
     if output_dir is not None:
@@ -177,6 +184,10 @@ def orient_test_haps_by_best_match(ref_sequences, test_sequences, id_map):
 
         cis_distance = aa + bb
         trans_distance = ab + ba
+
+        print(sample_name)
+        print(aa,ab)
+        print(ba,bb)
 
         # Flip the sequences around if it is a better match
         if cis_distance > trans_distance:
@@ -466,6 +477,9 @@ def download_chromosome_of_bam(chromosome, tsv_path, column_names, output_direct
 def iter_haplotypes_of_region(bam_paths, chromosome, start, stop, index_threads=1):
 
     for path in bam_paths:
+        # if "HG02486" not in path:
+        #     continue
+
         print(path)
 
         suffix = None
@@ -486,7 +500,13 @@ def iter_haplotypes_of_region(bam_paths, chromosome, start, stop, index_threads=
         if not os.path.exists(index_path):
             index_bam(path, index_threads)
 
-        iter = iter_query_sequences_of_region(bam_path=path, chromosome=chromosome, ref_start=start, ref_stop=stop)
+        iter = iter_query_sequences_of_region(
+            bam_path=path,
+            chromosome=chromosome,
+            ref_start=start,
+            ref_stop=stop,
+            skip_non_spanning=True
+        )
 
         sequences = dict()
         query_names = set()
@@ -529,31 +549,6 @@ def evaluate_test_haplotypes():
         n_threads=n_threads,
     )
 
-    # paths = [
-    #     # ["/home/ryan/data/test_hapslap/regional_haplotypes/haplotypes_chr20_4865820-4866980.fasta","/home/ryan/data/test_hapslap/results/chr20_4865820-4866980/assigned_haplotypes.fasta"],
-    #     # ["/home/ryan/data/test_hapslap/regional_haplotypes/haplotypes_chr20_5339287-5339435.fasta","/home/ryan/data/test_hapslap/results/chr20_5339287-5339435/assigned_haplotypes.fasta"],
-    #     # ["/home/ryan/data/test_hapslap/regional_haplotypes/haplotypes_chr20_5351560-5351629.fasta","/home/ryan/data/test_hapslap/results/chr20_5351560-5351629/assigned_haplotypes.fasta"],
-    #     # ["/home/ryan/data/test_hapslap/regional_haplotypes/haplotypes_chr20_16978970-16979138.fasta","/home/ryan/data/test_hapslap/results/chr20_16978970-16979138/assigned_haplotypes.fasta"],
-    #     # ["/home/ryan/data/test_hapslap/regional_haplotypes/haplotypes_chr20_39272745-39276089.fasta","/home/ryan/data/test_hapslap/results/chr20_39272745-39276089/assigned_haplotypes.fasta"],
-    #     # ["/home/ryan/data/test_hapslap/regional_haplotypes/haplotypes_chr20_43009391-43010760.fasta","/home/ryan/data/test_hapslap/results/chr20_43009391-43010760/assigned_haplotypes.fasta"],
-    #     # ["/home/ryan/data/test_hapslap/regional_haplotypes/haplotypes_chr20_45130317-45130465.fasta","/home/ryan/data/test_hapslap/results/chr20_45130317-45130465/assigned_haplotypes.fasta"],
-    #     # ["/home/ryan/data/test_hapslap/regional_haplotypes/haplotypes_chr20_46412345-46416772.fasta","/home/ryan/data/test_hapslap/results/chr20_46412345-46416772/assigned_haplotypes.fasta"],
-    #     # ["/home/ryan/data/test_hapslap/regional_haplotypes/haplotypes_chr20_55936795-55936884.fasta","/home/ryan/data/test_hapslap/results/chr20_55936795-55936884/assigned_haplotypes.fasta"],
-    #     # ["/home/ryan/data/test_hapslap/regional_haplotypes/haplotypes_chr20_57634553-57641082.fasta","/home/ryan/data/test_hapslap/results/chr20_57634553-57641082/assigned_haplotypes.fasta"],
-    #     # ["/home/ryan/data/test_hapslap/regional_haplotypes/haplotypes_chr20_63957473-63957621.fasta","/home/ryan/data/test_hapslap/results/chr20_63957473-63957621/assigned_haplotypes.fasta"],
-    #     # Assorted
-    #     ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_7901318-7901522.fasta","/home/ryan/data/test_hapslap/test_refactor/chr20_7901318-7901522/assigned_haplotypes.fasta"],
-    #     ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_10437604-10440525.fasta","/home/ryan/data/test_hapslap/test_refactor/chr20_10437604-10440525/assigned_haplotypes.fasta"],
-    #     ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_18259924-18261835.fasta","/home/ryan/data/test_hapslap/test_refactor/chr20_18259924-18261835/assigned_haplotypes.fasta"],
-    #     ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_18689217-18689256.fasta","/home/ryan/data/test_hapslap/test_refactor/chr20_18689217-18689256/assigned_haplotypes.fasta"],
-    #     ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_18828383-18828733.fasta","/home/ryan/data/test_hapslap/test_refactor/chr20_18828383-18828733/assigned_haplotypes.fasta"],
-    #     ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_47475093-47475817.fasta","/home/ryan/data/test_hapslap/test_refactor/chr20_47475093-47475817/assigned_haplotypes.fasta"],
-    #     ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_49404497-49404943.fasta","/home/ryan/data/test_hapslap/test_refactor/chr20_49404497-49404943/assigned_haplotypes.fasta"],
-    #     ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_55000754-55000852.fasta","/home/ryan/data/test_hapslap/test_refactor/chr20_55000754-55000852/assigned_haplotypes.fasta"],
-    #     ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_55486867-55492722.fasta","/home/ryan/data/test_hapslap/test_refactor/chr20_55486867-55492722/assigned_haplotypes.fasta"],
-    #     ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_54975152-54976857.fasta","/home/ryan/data/test_hapslap/test_refactor/chr20_54975152-54976857/assigned_haplotypes.fasta"]
-    # ]
-
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
@@ -572,10 +567,9 @@ def evaluate_test_haplotypes():
         ref_sequences = {x.name:x for x in ref_iter}
         test_sequences = {x.name:x for x in iterate_fasta(test_path)}
 
-        print(test_dir)
-        print(start)
-        print(stop)
-        # exit()
+        print(ref_sequences.keys())
+        print(test_sequences.keys())
+        exit()
 
         duplicated_homozygous_haps = set()
         test_sequences,test_duplicated = duplicate_homozygous_haps(test_sequences)
