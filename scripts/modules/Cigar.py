@@ -1,4 +1,8 @@
+from .Sequence import Sequence
+from .Bam import index_bam
+
 from collections import defaultdict
+from multiprocessing import Pool
 import sys
 import os
 
@@ -120,12 +124,29 @@ def get_query_coord_of_ref_coord(alignment, ref_start, ref_stop, offset_by_hardc
     spans_ref_start = False
     spans_ref_stop = False
 
-    for cigar_ref_start,cigar_ref_stop,cigar_query_start,cigar_query_stop,operation,length in iterate_cigar(alignment):
-        # print(' '.join(list(map(str,['w',ref_start,ref_stop,'r',cigar_ref_start,cigar_ref_stop,'q',cigar_query_start,cigar_query_stop,alignment.is_reverse,cigar_index_to_char[operation],length]))))
+    # print("---", alignment.query_name, "is supp: ", alignment.is_supplementary)
 
-        if not has_hardclip and operation == 5:
+    # first_operation,first_length = alignment.cigartuples[0]
+    # last_operation,last_length = alignment.cigartuples[-1]
+    #
+    # if first_operation == 5:
+    #     has_hardclip = True
+    #     hardclip_length = first_length
+
+    # print(first_operation,first_length)
+    # print(last_operation,last_length)
+
+
+    for i,[cigar_ref_start,cigar_ref_stop,cigar_query_start,cigar_query_stop,operation,length] in enumerate(iterate_cigar(alignment)):
+        # TODO: debug HG00741#1#JAHALY010000028.1
+
+        if i == 0 and operation == 5:
             hardclip_length = length
+            # print("has hardclip: " + str(hardclip_length))
             has_hardclip = True
+
+        if operation == 5 or operation == 4:
+            continue
 
         in_window = False
 
@@ -133,7 +154,7 @@ def get_query_coord_of_ref_coord(alignment, ref_start, ref_stop, offset_by_hardc
         if alignment.is_reverse:
             # Keep track of any valid coordinates for the case when the read is not spanning
             if ref_start <= cigar_ref_start <= ref_stop:
-                if first_valid_query_coord is None and operation != 4 and operation != 5:
+                if first_valid_query_coord is None:
                     first_valid_query_coord = cigar_query_start
 
                 # Use this indicator to skip unnecessary operations
@@ -141,8 +162,7 @@ def get_query_coord_of_ref_coord(alignment, ref_start, ref_stop, offset_by_hardc
 
             # Keep track of any valid coordinates for the case when the read is not spanning
             if ref_start <= cigar_ref_stop <= ref_stop:
-                if operation != 4 and operation != 5:
-                    last_valid_query_coord = cigar_query_stop
+                last_valid_query_coord = cigar_query_stop
 
                 # Use this indicator to skip unnecessary operations
                 in_window = True
@@ -165,6 +185,9 @@ def get_query_coord_of_ref_coord(alignment, ref_start, ref_stop, offset_by_hardc
                 if ((last_valid_query_coord is not None) or (first_valid_query_coord is not None)):
                     break
                 continue
+            # else:
+            #     if alignment.query_name == "HG00741#1#JAHALY010000028.1":
+            #         print(' '.join(list(map(str,['w',ref_start,ref_stop,'r',cigar_ref_start,cigar_ref_stop,'q',cigar_query_start,cigar_query_stop,alignment.is_reverse,cigar_index_to_char[operation],length]))))
 
             # Cigar overlaps window bound
             #
@@ -192,7 +215,7 @@ def get_query_coord_of_ref_coord(alignment, ref_start, ref_stop, offset_by_hardc
         else:
             # Keep track of any valid coordinates for the case when the read is not spanning
             if ref_start <= cigar_ref_start <= ref_stop:
-                if first_valid_query_coord is None and operation != 4 and operation != 5:
+                if first_valid_query_coord is None:
                     first_valid_query_coord = cigar_query_start
 
                 # Use this indicator to skip unnecessary operations
@@ -200,8 +223,7 @@ def get_query_coord_of_ref_coord(alignment, ref_start, ref_stop, offset_by_hardc
 
             # Keep track of any valid coordinates for the case when the read is not spanning
             if ref_start <= cigar_ref_stop <= ref_stop:
-                if operation != 4 and operation != 5:
-                    last_valid_query_coord = cigar_query_stop
+                last_valid_query_coord = cigar_query_stop
 
                 # Use this indicator to skip unnecessary operations
                 in_window = True
@@ -223,6 +245,9 @@ def get_query_coord_of_ref_coord(alignment, ref_start, ref_stop, offset_by_hardc
                 if ((last_valid_query_coord is not None) or (first_valid_query_coord is not None)):
                     break
                 continue
+            # else:
+                # if alignment.query_name == "HG00741#1#JAHALY010000028.1":
+                #     print(' '.join(list(map(str,['w',ref_start,ref_stop,'r',cigar_ref_start,cigar_ref_stop,'q',cigar_query_start,cigar_query_stop,alignment.is_reverse,cigar_index_to_char[operation],length]))))
 
             # Cigar overlaps window bound
             #
@@ -261,9 +286,14 @@ def get_query_coord_of_ref_coord(alignment, ref_start, ref_stop, offset_by_hardc
         query_start = first_valid_query_coord
         query_stop = last_valid_query_coord
 
+    # print("before hardclip offset: ", query_start, query_stop, "hardclip length:", hardclip_length)
+
     if offset_by_hardclip:
         query_start += hardclip_length
         query_stop += hardclip_length
+
+    # print("after hardclip offset: ", query_start, query_stop, "hardclip length:", hardclip_length)
+    # sys.stdout.flush()
 
     return query_start, query_stop, spans_ref_start, spans_ref_stop
 
@@ -374,8 +404,12 @@ def iter_query_sequences_of_region(bam_path, chromosome, ref_start, ref_stop, sk
 
     # Finally iterate the coordinates that were covered by this region and extract them
     for name,[start,stop] in sequence_coords.items():
-        s = sequences[name][start:stop]
-        r = is_reverse[name]
+        if name in sequences:
+            s = sequences[name][start:stop]
+            r = is_reverse[name]
+        else:
+            print("WARNING: skipping sequence with no primary alignment in chromosome: " + name)
+            continue
 
         if stop < start:
             raise Exception("ERROR: negative sequence coords obtained from %s:%d-%d in %s" % (chromosome,start,stop,bam_path))
@@ -447,6 +481,90 @@ def print_formatted_alignment_of_query(ref_path, query_path, sam_path, output_di
             file.write('\n')
 
 
+def get_sample_haplotypes_of_region(bam_path, chromosome, start, stop, index_threads):
+    suffix = None
+
+    if "hap1" in bam_path:
+        suffix = "hap1"
+
+    elif "hap2" in bam_path:
+        suffix = "hap2"
+
+    else:
+        raise Exception("ERROR: 'hap1' or 'hap2' not in file name, unparsable: " + bam_path)
+
+    index_path = bam_path + ".bai"
+
+    if not os.path.exists(index_path):
+        index_bam(bam_path, index_threads)
+
+    iter = iter_query_sequences_of_region(
+        bam_path=bam_path,
+        chromosome=chromosome,
+        ref_start=start,
+        ref_stop=stop,
+        skip_non_spanning=True
+    )
+
+    sequences = list()
+    for query_name, is_reverse, query_start, query_stop, seq in iter:
+        s = Sequence(query_name + "_" + suffix, seq.upper())
+        s.normalize_name()
+        sequences.append(s)
+
+    if len(sequences) > 1:
+        print("WARNING: multiple spanning query sequences in region: %s %s" % (str([x.name for x in sequences]), bam_path))
+        print("arbitrarily selecting first sequence...")
+    elif len(sequences) == 0:
+        print("WARNING: no spanning query sequences found in region: %s" % bam_path)
+        return None
+
+    return sequences[0]
+
+
+def get_haplotypes_of_region(bam_paths, chromosome, start, stop, n_threads):
+    args = list()
+
+    for path in bam_paths:
+        print(path)
+        args.append([path, chromosome, start, stop, True])
+
+    with Pool(n_threads) as pool:
+        results = pool.starmap(get_sample_haplotypes_of_region, args)
+
+    return results
+
+
+"""
+This is where regression tests live for the window-specific haplotype fetching problem
+"""
+def test_haplotype_fetching(data_directory):
+
+    # Multiple spanning sequences...
+    bam_path = os.path.join(data_directory,"HG01175_bam_hap1_vs_chm13_chr20.bam")
+    chromosome="chr20"
+    start=64108857
+    stop=64113364
+    get_haplotypes_of_region(bam_paths=[bam_path],chromosome=chromosome, start=start, stop=stop, n_threads=1)
+    # no solution to this problem yet
+
+    # Oversize sequence
+    bam_path = os.path.join(data_directory,"HG00741_bam_hap1_vs_chm13_chr20.bam")
+    chromosome="chr20"
+    start=64108857
+    stop=64113364
+    results = get_haplotypes_of_region(bam_paths=[bam_path],chromosome=chromosome, start=start, stop=stop, n_threads=1)
+
+    for item in results:
+        print(item.name, len(item))
+        if len(item) > 8000:
+            raise Exception("FAIL: oversize sequence in HG00741_bam_hap1_vs_chm13_chr20 64108857-64113364")
+
+    exit()
+
+
+
+
 def test_region(test_sam_path, chromosome, start, stop):
     data = defaultdict(list)
 
@@ -487,6 +605,8 @@ def test():
     ref_path = os.path.join(data_directory,"test_ref.fasta")
     query_path = os.path.join(data_directory,"test_query.fasta")
 
+    test_haplotype_fetching(data_directory)
+
     print_formatted_alignment_of_query(
         ref_path=ref_path,
         query_path=query_path,
@@ -510,6 +630,7 @@ def test():
     stop=2050
     print("\nTESTING: ", chromosome, start, stop)
     test_region(test_sam_path=test_sam_path, chromosome=chromosome, start=start, stop=stop)
+
 
 
 if __name__ == "__main__":

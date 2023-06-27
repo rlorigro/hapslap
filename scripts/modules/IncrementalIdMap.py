@@ -31,6 +31,9 @@ class IncrementalIdMap:
         return id
 
     def get_name(self, id: int) -> Optional[str]:
+        if not type(id) == int:
+            raise Exception("ERROR: cannot get name for non-int id: " + str(id) + " of type " + str(type(id)))
+
         name = None
 
         if id < len(self.id_to_name):

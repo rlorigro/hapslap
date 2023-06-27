@@ -2,8 +2,9 @@ import multiprocessing
 
 from modules.IncrementalIdMap import IncrementalIdMap
 from modules.IterativeHistogram import IterativeHistogram
-from modules.Cigar import iter_query_sequences_of_region
-from modules.Bam import get_region_from_bam,index_bam
+from modules.Cigar import get_haplotypes_of_region
+from modules.Bam import get_region_from_bam
+from modules.Sequence import Sequence
 from modules.Authenticator import *
 
 from itertools import combinations
@@ -29,25 +30,6 @@ def truncate_colormap(cmap, minval=0.0, maxval=1.0, n=100):
         'trunc({n},{a:.2f},{b:.2f})'.format(n=cmap.name, a=minval, b=maxval),
         cmap(numpy.linspace(minval, maxval, n)))
     return new_cmap
-
-
-class Sequence:
-    def __init__(self, name, sequence):
-        self.name = name
-        self.sequence = sequence
-
-    def normalize_name(self):
-        tokens = re.split("#|_", self.name)
-        self.name = '_'.join([tokens[0],self.name[-1]])
-
-    def __eq__(self, other):
-        if isinstance(other, Sequence):
-            return self.name == other.name and self.sequence == other.sequence
-        else:
-            return False
-
-    def __len__(self):
-        return len(self.sequence)
 
 
 def iterate_fasta(path, force_upper_case=True, normalize_name=True):
@@ -179,6 +161,9 @@ def orient_test_haps_by_best_match(ref_sequences, test_sequences, id_map):
         a = sample_name + "_1"
         b = sample_name + "_2"
 
+        if not (a in ref_sequences and b in ref_sequences and a in test_sequences and b in test_sequences):
+            continue
+
         aa = align_and_get_indel_distance(ref_sequences[a],test_sequences[a])
         bb = align_and_get_indel_distance(ref_sequences[b],test_sequences[b])
         ab = align_and_get_indel_distance(ref_sequences[a],test_sequences[b])
@@ -187,9 +172,9 @@ def orient_test_haps_by_best_match(ref_sequences, test_sequences, id_map):
         cis_distance = aa + bb
         trans_distance = ab + ba
 
-        print(sample_name)
-        print(aa,ab)
-        print(ba,bb)
+        # print(sample_name)
+        # print(aa,ab)
+        # print(ba,bb)
 
         # Flip the sequences around if it is a better match
         if cis_distance > trans_distance:
@@ -301,133 +286,111 @@ def write_formatted_alignments_per_sample():
         write_sample_alignments(ref_sequences, test_sequences, id_map, output_dir)
 
 
-def evaluate_upper_bound():
-    output_dir = "/home/ryan/data/test_hapslap/evaluation/upper_bound"
-    n_threads = 30
-    flank_size = 20000
-    distance_threshold = 25
+def evaluate_upper_bound(ref_sequences, haplotype_fasta_path, output_dir, prefix, flank_size, distance_threshold, n_threads):
+    test_sequences = dict()
 
-    paths = [
-        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_7901318-7901522.fasta","/home/ryan/data/test_hapslap/results/chr20_7901318-7901522/paths/"],
-        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_10437604-10440525.fasta","/home/ryan/data/test_hapslap/results/chr20_10437604-10440525/paths/"],
-        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_18259924-18261835.fasta","/home/ryan/data/test_hapslap/results/chr20_18259924-18261835/paths/"],
-        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_18689217-18689256.fasta","/home/ryan/data/test_hapslap/results/chr20_18689217-18689256/paths/"],
-        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_18828383-18828733.fasta","/home/ryan/data/test_hapslap/results/chr20_18828383-18828733/paths/"],
-        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_47475093-47475817.fasta","/home/ryan/data/test_hapslap/results/chr20_47475093-47475817/paths/"],
-        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_49404497-49404943.fasta","/home/ryan/data/test_hapslap/results/chr20_49404497-49404943/paths/"],
-        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_55000754-55000852.fasta","/home/ryan/data/test_hapslap/results/chr20_55000754-55000852/paths/"],
-        ["/home/ryan/data/test_hapslap/haplotypes/haplotypes_chr20_55486867-55492722.fasta","/home/ryan/data/test_hapslap/results/chr20_55486867-55492722/paths/"]
-    ]
+    for item in iterate_fasta(haplotype_fasta_path, normalize_name=False):
+        item.sequence = item.sequence[flank_size:len(item.sequence) - flank_size]
+        test_sequences[item.name] = item
 
-    for ref_path,test_path in paths:
-        test_fasta_paths = [os.path.join(test_path,x) for x in glob("*.fasta", root_dir=test_path)]
+    ref_id_map = IncrementalIdMap()
+    test_id_map = IncrementalIdMap()
 
-        ref_sequences = {x.name:x for x in iterate_fasta(ref_path)}
-        test_sequences = dict()
+    for key in sorted(ref_sequences):
+        ref_id_map.add(key)
 
-        for path in test_fasta_paths:
-            for item in iterate_fasta(path, normalize_name=False):
-                item.sequence = item.sequence[flank_size:len(item.sequence) - flank_size]
-                test_sequences[item.name] = item
+    for key in sorted(test_sequences):
+        test_id_map.add(key)
 
-        ref_id_map = IncrementalIdMap()
-        test_id_map = IncrementalIdMap()
+    pairs,lengths,results = cross_align_sequences(sequences=ref_sequences,n_threads=n_threads) #,output_dir=output_dir)
 
-        for key in sorted(ref_sequences):
-            ref_id_map.add(key)
+    graph = networkx.Graph()
 
-        for key in sorted(test_sequences):
-            test_id_map.add(key)
+    for i in range(len(results)):
+        a,b = pairs[i]
+        l_a,l_b = lengths[i]
+        d = results[i]
 
-        pairs,lengths,results = cross_align_sequences(sequences=ref_sequences,n_threads=n_threads) #,output_dir=output_dir)
+        # w = d
+        w = 0
+        if l_a + l_b > 0:
+            w = float(l_a + l_b - d) / float(l_a + l_b)
 
-        graph = networkx.Graph()
+        id_a = ref_id_map.get_id(a)
+        id_b = ref_id_map.get_id(b)
 
-        for i in range(len(results)):
-            a,b = pairs[i]
-            l_a,l_b = lengths[i]
-            d = results[i]
+        if id_a not in graph:
+            graph.add_node(id_a)
 
-            # w = d
-            w = 0
-            if l_a + l_b > 0:
-                w = float(l_a + l_b - d) / float(l_a + l_b)
+        if id_b not in graph:
+            graph.add_node(id_b)
 
-            id_a = ref_id_map.get_id(a)
-            id_b = ref_id_map.get_id(b)
+        if d <= distance_threshold and w != 0:
+            graph.add_edge(id_a, id_b, weight=w)
 
-            if id_a not in graph:
-                graph.add_node(id_a)
+    ref_labels = dict()
+    for id,name in ref_id_map:
+        ref_labels[id] = name
 
-            if id_b not in graph:
-                graph.add_node(id_b)
+    components = list(networkx.connected_components(graph))
 
-            if d <= distance_threshold and w != 0:
-                graph.add_edge(id_a, id_b, weight=w)
+    component_map = dict()
+    for c,component in enumerate(components):
+        for n in component:
+            component_map[n] = c
 
-        ref_labels = dict()
-        for id,name in ref_id_map:
-            ref_labels[id] = name
+    # This will order all IDs so that clusters are contiguous, otherwise randomly ordered
+    id_to_cluster_map = dict()
+    for id in sorted(range(len(ref_id_map)), key=lambda x: component_map[x]):
+        id_to_cluster_map[id] = len(id_to_cluster_map)
 
-        components = list(networkx.connected_components(graph))
+    pairs,lengths,results = align_sequences_to_other_sequences(
+        a_seqs=ref_sequences,
+        b_seqs=test_sequences,
+        n_threads=n_threads
+        # output_dir=output_dir
+    )
 
-        component_map = dict()
-        for c,component in enumerate(components):
-            for n in component:
-                component_map[n] = c
+    matrix = numpy.zeros([len(ref_id_map),len(test_id_map)])
 
-        # This will order all IDs so that clusters are contiguous, otherwise randomly ordered
-        id_to_cluster_map = dict()
-        for id in sorted(range(len(ref_id_map)), key=lambda x: component_map[x]):
-            id_to_cluster_map[id] = len(id_to_cluster_map)
+    for i in range(len(results)):
+        name_ref = pairs[i][0].name
+        name_test = pairs[i][1].name
 
-        pairs,lengths,results = align_sequences_to_other_sequences(
-            a_seqs=ref_sequences,
-            b_seqs=test_sequences,
-            n_threads=n_threads,
-            # output_dir=output_dir
-        )
+        l_ref,l_test = lengths[i]
+        d = results[i]
 
-        matrix = numpy.zeros([len(ref_id_map),len(test_id_map)])
+        id_ref = ref_id_map.get_id(name_ref)
+        id_test = test_id_map.get_id(name_test)
 
-        for i in range(len(results)):
-            name_ref = pairs[i][0].name
-            name_test = pairs[i][1].name
+        matrix[id_to_cluster_map[id_ref]][id_test] = d
 
-            l_ref,l_test = lengths[i]
-            d = results[i]
+    fig = pyplot.figure()
+    axes = pyplot.axes()
+    p = axes.matshow(matrix,cmap='viridis')
+    pyplot.colorbar(p, ax=axes)
 
-            id_ref = ref_id_map.get_id(name_ref)
-            id_test = test_id_map.get_id(name_test)
+    # Construct tick labels based on the clustering order
+    labels = [None]*len(ref_id_map.id_to_name)
+    for id,name in ref_id_map:
+        labels[id_to_cluster_map[id]] = name
 
-            matrix[id_to_cluster_map[id_ref]][id_test] = d
+    axes.xaxis.set_ticks_position('bottom')
 
-        fig = pyplot.figure()
-        axes = pyplot.axes()
-        p = axes.matshow(matrix,cmap='viridis')
-        pyplot.colorbar(p, ax=axes)
+    axes.set_yticks(list(range(len(ref_id_map))))
+    axes.set_yticklabels(labels)
 
-        # Construct tick labels based on the clustering order
-        labels = [None]*len(ref_id_map.id_to_name)
-        for id,name in ref_id_map:
-            labels[id_to_cluster_map[id]] = name
+    for x in range(matrix.shape[0]):
+        for y in range(matrix.shape[1]):
+            if matrix[x][y] < distance_threshold:
+                pyplot.plot(y,x,marker='o',color='red',markersize=0.7,markeredgecolor='none')
 
-        axes.xaxis.set_ticks_position('bottom')
+    axes.tick_params(axis='both', which='major', labelsize=3)
 
-        axes.set_yticks(list(range(len(ref_id_map))))
-        axes.set_yticklabels(labels)
-
-        for x in range(matrix.shape[0]):
-            for y in range(matrix.shape[1]):
-                if matrix[x][y] < distance_threshold:
-                    pyplot.plot(y,x,marker='o',color='red',markersize=0.7,markeredgecolor='none')
-
-        axes.tick_params(axis='both', which='major', labelsize=3)
-
-        pyplot.tight_layout()
-        output_path = os.path.join(output_dir,os.path.basename(ref_path).replace(".fasta", "_confusion.png"))
-        fig.savefig(output_path, dpi=500, bbox_inches='tight')
-        pyplot.close('all')
+    pyplot.tight_layout()
+    output_path = os.path.join(output_dir,prefix + "_upper_bound.png")
+    fig.savefig(output_path, dpi=500, bbox_inches='tight')
+    pyplot.close('all')
 
 
 def download_chromosome_of_bam(chromosome, tsv_path, column_names, output_directory, n_threads, samples=None):
@@ -443,7 +406,7 @@ def download_chromosome_of_bam(chromosome, tsv_path, column_names, output_direct
 
     n_rows, n_cols = df.shape
 
-    print(n_rows)
+    # print(n_rows)
 
     args = list()
 
@@ -476,55 +439,7 @@ def download_chromosome_of_bam(chromosome, tsv_path, column_names, output_direct
     return download_results
 
 
-def get_sample_haplotypes_of_region(bam_path, chromosome, start, stop, index_threads):
-    suffix = None
-
-    if "hap1" in bam_path:
-        suffix = "hap1"
-
-    elif "hap2" in bam_path:
-        suffix = "hap2"
-
-    else:
-        raise Exception("ERROR: 'hap1' or 'hap2' not in file name, unparsable: " + bam_path)
-
-    index_path = bam_path + ".bai"
-
-    if not os.path.exists(index_path):
-        index_bam(bam_path, index_threads)
-
-    iter = iter_query_sequences_of_region(
-        bam_path=bam_path,
-        chromosome=chromosome,
-        ref_start=start,
-        ref_stop=stop,
-        skip_non_spanning=True
-    )
-
-    sequences = list()
-    for query_name, is_reverse, query_start, query_stop, seq in iter:
-        s = Sequence(query_name + "_" + suffix, seq.upper())
-        s.normalize_name()
-        sequences.append(s)
-
-    if len(sequences) > 1:
-        print("WARNING: multiple spanning query sequences in region: " + str([x.name for x in sequences]))
-        print("arbitrarily selecting first sequence...")
-
-    return sequences[0]
-
-
-def get_haplotypes_of_region(bam_paths, chromosome, start, stop, n_threads):
-    args = list()
-
-    for path in bam_paths:
-        print(path)
-        args.append([path, chromosome, start, stop, True])
-
-    with Pool(n_threads) as pool:
-        results = pool.starmap(get_sample_haplotypes_of_region, args)
-
-    return results
+# def read_genotype_support_from_file(path):
 
 
 def evaluate_test_haplotypes():
@@ -532,15 +447,18 @@ def evaluate_test_haplotypes():
     distance_threshold = 25
     index_threads = 1
 
-    output_dir = "/home/ryan/data/test_hapslap/evaluation/test_breakend/"
+    # TODO: make this part of the config output, and fetch this automatically
+    flank_length = 5000
+
+    output_dir = "/home/ryan/data/test_hapslap/evaluation/test_automated/"
     tsv_path = "/home/ryan/data/test_hapslap/terra/hprc_sandbox/subsample.tsv"
     column_names = ["bam_hap1_vs_chm13","bam_hap2_vs_chm13"]
     chromosome = "chr20"
 
-    input_directory = Path("/home/ryan/data/test_hapslap/results_breakend/")
+    input_directory = Path("/home/ryan/data/test_hapslap/results_automated/")
     test_dirs = [str(f) for f in input_directory.iterdir() if f.is_dir()]
 
-    print(test_dirs)
+    # print(test_dirs)
 
     aligned_hap_directory = os.path.join(output_dir, "aligned_haps")
     bam_paths = download_chromosome_of_bam(
@@ -558,6 +476,8 @@ def evaluate_test_haplotypes():
         print("Evaluating: " + test_dir)
         start,stop = test_dir.split('/')[-1].replace(".fasta","").split('_')[-1].split('-')
         test_path = os.path.join(test_dir, "assigned_haplotypes.fasta")
+        all_haplotypes_path = os.path.join(test_dir, "all_paths.fasta")
+        prefix = chromosome + "_" + str(start) + "-" + str(stop)
 
         start = int(start)
         stop = int(stop)
@@ -572,11 +492,13 @@ def evaluate_test_haplotypes():
             n_threads=n_threads
         )
 
-        ref_sequences = {x.name:x for x in results}
+        ref_sequences = {x.name:x for x in results if x is not None}
         test_sequences = {x.name:x for x in iterate_fasta(test_path)}
 
-        print(sorted(ref_sequences.keys()))
-        print(sorted(test_sequences.keys()))
+        evaluate_upper_bound(ref_sequences, all_haplotypes_path, output_dir, prefix, flank_length, distance_threshold, n_threads)
+
+        # print(sorted(ref_sequences.keys()))
+        # print(sorted(test_sequences.keys()))
 
         duplicated_homozygous_haps = set()
         test_sequences,test_duplicated = duplicate_homozygous_haps(test_sequences)
@@ -584,20 +506,29 @@ def evaluate_test_haplotypes():
         duplicated_homozygous_haps = duplicated_homozygous_haps.union(test_duplicated)
         duplicated_homozygous_haps = duplicated_homozygous_haps.union(ref_duplicated)
 
-        print(duplicated_homozygous_haps)
+        # print(duplicated_homozygous_haps)
 
-        missing_sequences = set()
+        missing_haps = set()
 
         for key in list(ref_sequences.keys()):
             if key not in test_sequences:
-                print("WARNING: haplotype not in test_sequences: " + key)
-                missing_sequences.add(key)
-                test_sequences[key] = Sequence(name=key, sequence="")
+                print("WARNING: ref haplotype not in test_sequences: " + key)
+                print("Deleting ref haplotype of same sample")
+
+                missing_haps.add(key)
+
+                del ref_sequences[key]
+
+                # test_sequences[key] = Sequence(name=key, sequence="")
 
         for key in list(test_sequences.keys()):
             if key not in ref_sequences:
-                print("WARNING: haplotype not in ref_sequences: " + key)
-                ref_sequences[key] = Sequence(name=key, sequence="")
+                print("WARNING: test sample haplotypes not in ref_sequences: " + key)
+                print("Deleting test haplotype of same sample")
+
+                del test_sequences[key]
+
+                # ref_sequences[key] = Sequence(name=key, sequence="")
 
         for key in sorted(ref_sequences):
             id_map.add(key)
@@ -631,7 +562,7 @@ def evaluate_test_haplotypes():
                 graph.add_node(id_b)
 
             if d <= distance_threshold and w != 0:
-                print(a, b, d, w, l_a, l_b)
+                # print(a, b, d, w, l_a, l_b)
                 graph.add_edge(id_a, id_b, weight=w)
 
         labels = dict()
@@ -649,13 +580,13 @@ def evaluate_test_haplotypes():
         component_map = dict()
         colors = dict()
         for c,component in enumerate(components):
-            print(float(c),float(len(components)))
+            # print(float(c),float(len(components)))
             color_index = float(c+0.001)/float(len(components))
-            print(color_index)
+            # print(color_index)
 
             color = colormap(color_index)
-            print(c,[id_map.get_name(id) for id in component])
-            print('\t',color)
+            # print(c,[id_map.get_name(id) for id in component])
+            # print('\t',color)
 
             for n in component:
                 component_map[n] = c
@@ -672,7 +603,6 @@ def evaluate_test_haplotypes():
 
         networkx.draw(graph,pos,alpha=0.6,node_color=colors_list,node_size=20)
 
-        prefix = chromosome + "_" + str(start) + "-" + str(stop)
         output_path = os.path.join(output_dir,prefix + "_graph.png")
         fig.savefig(output_path, dpi=200, bbox_inches='tight')
         pyplot.close('all')
@@ -795,7 +725,7 @@ def evaluate_test_haplotypes():
             if s in duplicated_homozygous_haps:
                 label.set_color("blue")
 
-            if s in missing_sequences:
+            if s in missing_haps:
                 label.set_color("red")
 
         pyplot.tight_layout()
@@ -807,7 +737,6 @@ def evaluate_test_haplotypes():
 
 def main():
     evaluate_test_haplotypes()
-    # evaluate_upper_bound()
     # write_formatted_alignments_per_sample()
 
 
