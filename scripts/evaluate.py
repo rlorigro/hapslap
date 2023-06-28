@@ -11,7 +11,10 @@ from itertools import combinations
 from multiprocessing import Pool
 from pathlib import Path
 from glob import glob
+import argparse
+import hashlib
 import numpy
+import json
 import sys
 import os
 import re
@@ -393,9 +396,8 @@ def evaluate_upper_bound(ref_sequences, haplotype_fasta_path, output_dir, prefix
     pyplot.close('all')
 
 
-def download_chromosome_of_bam(chromosome, tsv_path, column_names, output_directory, n_threads, samples=None):
+def download_regions_of_bam(regions, tsv_path, column_names, output_directory, n_threads, samples=None):
     token = GoogleToken()
-    index_threads = 1
 
     output_directory = os.path.abspath(output_directory)
 
@@ -406,7 +408,21 @@ def download_chromosome_of_bam(chromosome, tsv_path, column_names, output_direct
 
     n_rows, n_cols = df.shape
 
-    # print(n_rows)
+    if type(regions) == set:
+        regions = list(regions)
+
+    # Samtools compatible formatting of regions
+    region_string = ' '.join(regions)
+
+    file_tag = region_string
+
+    # If too many regions were specified to make a sensible file path, use a deterministic hash identifier instead
+    if len(file_tag) > 64:
+        sha = hashlib.sha256()
+        sha.update(region_string.encode())
+        file_tag = sha.hexdigest()
+
+        sys.stderr.write("Using substitute hash for regions:%s\n\tregions:%s\n" % (file_tag, region_string))
 
     args = list()
 
@@ -430,8 +446,8 @@ def download_chromosome_of_bam(chromosome, tsv_path, column_names, output_direct
             if not os.path.exists(output_subdirectory):
                 os.makedirs(output_subdirectory)
 
-            filename = sample_name + "_" + column_name + "_" + chromosome + ".bam"
-            args.append([output_subdirectory,gs_uri,chromosome,token,600,filename])
+            filename = sample_name + "_" + column_name + "_" + file_tag + ".bam"
+            args.append([output_subdirectory,gs_uri,file_tag,token,600,filename])
 
     with Pool(n_threads) as pool:
         download_results = pool.starmap(get_region_from_bam, args)
@@ -439,30 +455,41 @@ def download_chromosome_of_bam(chromosome, tsv_path, column_names, output_direct
     return download_results
 
 
-# def read_genotype_support_from_file(path):
+def get_all_relevant_chromosome_names(test_dirs):
+    names = set()
+
+    for test_dir in test_dirs:
+        print("Evaluating: " + test_dir)
+        config_path = os.path.join(test_dir,"config.json")
+
+        config = None
+        with open(config_path, 'r') as file:
+            config = json.load(file)
+
+        print(config)
+
+        names.add(config["chromosome"])
+
+    return names
 
 
-def evaluate_test_haplotypes():
-    n_threads = 30
-    distance_threshold = 25
-    index_threads = 1
+def evaluate_test_haplotypes(
+        input_dir,
+        cache_dir,
+        output_dir,
+        n_threads,
+        distance_threshold,
+        tsv_path,
+        column_names
+        ):
 
-    # TODO: make this part of the config output, and fetch this automatically
-    flank_length = 5000
+    test_dirs = [str(f) for f in Path(input_dir).iterdir() if f.is_dir()]
 
-    output_dir = "/home/ryan/data/test_hapslap/evaluation/test_automated/"
-    tsv_path = "/home/ryan/data/test_hapslap/terra/hprc_sandbox/subsample.tsv"
-    column_names = ["bam_hap1_vs_chm13","bam_hap2_vs_chm13"]
-    chromosome = "chr20"
+    chromosome_names = get_all_relevant_chromosome_names(test_dirs)
 
-    input_directory = Path("/home/ryan/data/test_hapslap/results_automated/")
-    test_dirs = [str(f) for f in input_directory.iterdir() if f.is_dir()]
-
-    # print(test_dirs)
-
-    aligned_hap_directory = os.path.join(output_dir, "aligned_haps")
-    bam_paths = download_chromosome_of_bam(
-        chromosome=chromosome,
+    aligned_hap_directory = os.path.join(cache_dir, "aligned_haps")
+    bam_paths = download_regions_of_bam(
+        regions=chromosome_names,
         tsv_path=tsv_path,
         column_names=column_names,
         output_directory=aligned_hap_directory,
@@ -474,13 +501,24 @@ def evaluate_test_haplotypes():
 
     for test_dir in test_dirs:
         print("Evaluating: " + test_dir)
-        start,stop = test_dir.split('/')[-1].replace(".fasta","").split('_')[-1].split('-')
+        config_path = os.path.join(test_dir,"config.json")
         test_path = os.path.join(test_dir, "assigned_haplotypes.fasta")
         all_haplotypes_path = os.path.join(test_dir, "all_paths.fasta")
-        prefix = chromosome + "_" + str(start) + "-" + str(stop)
 
-        start = int(start)
-        stop = int(stop)
+        if not os.path.exists(test_path):
+            continue
+
+        config = None
+        with open(config_path, 'r') as file:
+            config = json.load(file)
+
+        print(config)
+        flank_length = config["flank_length"]
+        chromosome = config["chromosome"]
+        start = config["ref_start"]
+        stop = config["ref_stop"]
+
+        prefix = chromosome + "_" + str(start) + "-" + str(stop)
 
         id_map = IncrementalIdMap()
 
@@ -497,16 +535,11 @@ def evaluate_test_haplotypes():
 
         evaluate_upper_bound(ref_sequences, all_haplotypes_path, output_dir, prefix, flank_length, distance_threshold, n_threads)
 
-        # print(sorted(ref_sequences.keys()))
-        # print(sorted(test_sequences.keys()))
-
         duplicated_homozygous_haps = set()
         test_sequences,test_duplicated = duplicate_homozygous_haps(test_sequences)
         ref_sequences,ref_duplicated = duplicate_homozygous_haps(ref_sequences)
         duplicated_homozygous_haps = duplicated_homozygous_haps.union(test_duplicated)
         duplicated_homozygous_haps = duplicated_homozygous_haps.union(ref_duplicated)
-
-        # print(duplicated_homozygous_haps)
 
         missing_haps = set()
 
@@ -519,16 +552,12 @@ def evaluate_test_haplotypes():
 
                 del ref_sequences[key]
 
-                # test_sequences[key] = Sequence(name=key, sequence="")
-
         for key in list(test_sequences.keys()):
             if key not in ref_sequences:
                 print("WARNING: test sample haplotypes not in ref_sequences: " + key)
                 print("Deleting test haplotype of same sample")
 
                 del test_sequences[key]
-
-                # ref_sequences[key] = Sequence(name=key, sequence="")
 
         for key in sorted(ref_sequences):
             id_map.add(key)
@@ -573,6 +602,7 @@ def evaluate_test_haplotypes():
         axes = pyplot.axes()
 
         components = list(networkx.connected_components(graph))
+        components = sorted(components, key=lambda x: len(x), reverse=True)
 
         colormap = pyplot.get_cmap("rainbow")
         colormap = truncate_colormap(colormap, 0, 0.7, 100)
@@ -580,13 +610,10 @@ def evaluate_test_haplotypes():
         component_map = dict()
         colors = dict()
         for c,component in enumerate(components):
-            # print(float(c),float(len(components)))
+            print(float(c),float(len(components)))
             color_index = float(c+0.001)/float(len(components))
-            # print(color_index)
 
             color = colormap(color_index)
-            # print(c,[id_map.get_name(id) for id in component])
-            # print('\t',color)
 
             for n in component:
                 component_map[n] = c
@@ -735,10 +762,105 @@ def evaluate_test_haplotypes():
         pyplot.close('all')
 
 
-def main():
-    evaluate_test_haplotypes()
+def main(
+        input_dir,
+        cache_dir,
+        output_dir,
+        n_threads,
+        distance_threshold,
+        tsv_path,
+        column_names,
+):
+
+    # n_threads = 30
+    # distance_threshold = 25
+    #
+    # output_dir = "/home/ryan/data/test_hapslap/evaluation/test_breakend/"
+    # tsv_path = "/home/ryan/data/test_hapslap/terra/hprc_sandbox/subsample.tsv"
+    # column_names = ["bam_hap1_vs_chm13","bam_hap2_vs_chm13"]
+    #
+    # input_directory = Path("/home/ryan/data/test_hapslap/results_breakend/")
+
+    evaluate_test_haplotypes(
+        input_dir=input_dir,
+        cache_dir=cache_dir,
+        output_dir=output_dir,
+        n_threads=n_threads,
+        distance_threshold=distance_threshold,
+        tsv_path=tsv_path,
+        column_names=column_names,
+    )
+
     # write_formatted_alignments_per_sample()
 
 
+def parse_comma_separated_string(s):
+    return re.split(r'[{\'\",}]+', s.strip("\"\'[]{}"))
+
+
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "-i","--input_dir",
+        required=True,
+        type=str,
+        help="Output directory"
+    )
+
+    parser.add_argument(
+        "-o","--output_dir",
+        required=True,
+        type=str,
+        help="Output directory which will be created (and must not exist)"
+    )
+
+    parser.add_argument(
+        "--cache_dir",
+        required=True,
+        type=str,
+        help="Directory where remote BAMs will be stored, and potentially reused for future runs of this script"
+    )
+
+    parser.add_argument(
+        "-t","--threads",
+        required=False,
+        default=1,
+        type=int,
+        help="Number of threads to use"
+    )
+
+    parser.add_argument(
+        "-d","--distance_threshold",
+        required=False,
+        default=25,
+        type=int,
+        help="Default clustering threshold for distance between haplotypes"
+    )
+
+    parser.add_argument(
+        "--tsv",
+        required=True,
+        type=str,
+        help="Path to a Terra-style haplotype TSV which contains relevant lookups for aligned hap1/hap2 ref assemblies per sample"
+    )
+
+    parser.add_argument(
+        "-c","--column_names",
+        required=False,
+        default="'bam_hap1_vs_chm13','bam_hap2_vs_chm13'",
+        type=parse_comma_separated_string,
+        help="Which are the relevant columns of the Terra-style TSV (see tsv_path help msg) at the moment, column names must contain the substrings 'hap1' and 'hap2' (sorry)"
+    )
+
+    args = parser.parse_args()
+
+    main(
+        input_dir=args.input_dir,
+        cache_dir=args.cache_dir,
+        output_dir=args.output_dir,
+        n_threads=args.threads,
+        distance_threshold=args.distance_threshold,
+        tsv_path=args.tsv,
+        column_names=args.column_names
+    )

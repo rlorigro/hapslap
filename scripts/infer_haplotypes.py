@@ -1,9 +1,3 @@
-from threading import Timer
-import json
-import time
-import math
-import sys
-
 from modules.Cigar import iterate_cigar,cigar_index_to_char
 from modules.IterativeHistogram import IterativeHistogram
 from modules.IncrementalIdMap import IncrementalIdMap
@@ -17,9 +11,15 @@ from modules.GsUri import *
 from collections import defaultdict,Counter
 from multiprocessing import Pool
 from copy import deepcopy,copy
+from threading import Timer
 import subprocess
 import argparse
 import os.path
+import time
+import json
+import time
+import math
+import sys
 import re
 
 from ortools.graph.python import min_cost_flow
@@ -562,6 +562,7 @@ def optimize_with_cpsat(
 
     for i in range(1,max_feasible_haplotypes):
         print(i)
+
         model.ClearAssumptions()
         model.AddAssumption(vars.n[i])
         model.Minimize(vars.cost_a)
@@ -584,7 +585,7 @@ def optimize_with_cpsat(
             o.cancel_timer_thread()
             results[i] = vars.get_cache(status=status, solver=solver)
 
-        if len(results) > 1 and results[i].cost_a > results[i-1].cost_a:
+        if len(results) > 1 and i-1 in results and results[i].cost_a > results[i-1].cost_a:
             sys.stderr.write("Iteration stopped at n=%d because score worsened\n" % i)
             break
 
@@ -626,8 +627,6 @@ def enumerate_paths_using_alignments(alleles, gaf_path: str, output_directory: s
             tokens = line.strip().split('\t')
             read_name = tokens[0]
 
-            print(read_name)
-
             if read_subset is not None and read_name not in read_subset:
                 print("skipping read: " + read_name)
                 continue
@@ -642,20 +641,14 @@ def enumerate_paths_using_alignments(alleles, gaf_path: str, output_directory: s
                 path = tuple(map(int,reversed(re.findall(r'\d+', tokens[5]))))
 
             else:
-                print(tokens[5])
                 raise Exception("ERROR: Non GFA character found in path column of GFA")
 
-            print(path)
-
             if len(path) > 1 and alleles[path[0]].is_left_flank and alleles[path[-1]].is_right_flank:
-                print("accepted")
                 paths.increment_weight(path,1)
 
     filtered_paths = Paths()
 
-    print()
     for p,path,frequency in paths:
-        print(frequency, path)
         if frequency >= min_coverage:
             filtered_paths.add_path(path,frequency)
 
@@ -769,11 +762,12 @@ def run_minigraph(output_directory, gfa_path, fasta_path):
         "-c",
         "-g", str(10000),
         "-k", str(14),
+        "-f", "0.25",
         "-r", "1000,20000",
         "-n", "3,3",
         "-m", "30,20",
         "-p", str(0.5),
-        "-j", str(0.1),
+        "-j", str(0.2),
         "-x", "lr",
         "-o", output_path,
         gfa_path,
@@ -845,7 +839,6 @@ def trim_flanks_from_ref_alleles(alleles, flank_length):
         if alleles[i].is_right_flank:
             stop_node = i
 
-    print("Trimming start and stop nodes: %d %d " % (start_node,stop_node))
     # Trim flanks off the allele sequences
     s_start = alleles[start_node].sequence
     l_start = len(s_start)
@@ -855,25 +848,28 @@ def trim_flanks_from_ref_alleles(alleles, flank_length):
     l_stop = len(s_stop)
     s_stop = s_stop[:(l_stop - flank_length)]
 
-    print("before trimming: ", l_start)
-    print("after trimming: ", len(s_start))
-    print("before trimming: ", l_stop)
-    print("after trimming: ", len(s_stop))
-
     alleles[start_node].sequence = s_start
     alleles[stop_node].sequence = s_stop
 
 
+def infer_haplotypes(
+        ref_path,
+        bam_paths,
+        vcf_paths,
+        chromosome,
+        ref_start,
+        ref_stop,
+        flank_length,
+        min_coverage,
+        max_path_to_read_cost,
+        sample_names,
+        output_directory):
 
-def infer_haplotypes(ref_path, bam_paths, vcf_paths, chromosome, ref_start, ref_stop, sample_names, output_directory):
+    time_start = time.time()
+
     generate_debug_alignments = True
     n_threads = 30
     n_sort_threads = 4
-    flank_length = 5000
-
-    # Used by initial minigraph alignment to select paths for the optimizer to cover
-    min_coverage = 2
-    max_path_to_read_cost = 800
 
     region_string = chromosome + ":" + str(ref_start) + "-" + str(ref_stop)
 
@@ -883,6 +879,18 @@ def infer_haplotypes(ref_path, bam_paths, vcf_paths, chromosome, ref_start, ref_
         os.makedirs(output_directory)
     else:
         exit("ERROR: output directory exists already: %s" % output_directory)
+
+    json_log_path = os.path.join(output_directory, "config.json")
+    write_config_to_json(
+        chromosome=chromosome,
+        ref_start=ref_start,
+        ref_stop=ref_stop,
+        sample_names=sample_names,
+        ref_path=ref_path,
+        flank_length=flank_length,
+        min_coverage=min_coverage,
+        max_path_to_read_cost=max_path_to_read_cost,
+        json_path=json_log_path)
 
     tokenator = GoogleToken()
 
@@ -1013,10 +1021,15 @@ def infer_haplotypes(ref_path, bam_paths, vcf_paths, chromosome, ref_start, ref_
 
         os.remove(region_bam_path)
 
+    a = time.time()
+
     output_gaf_path = run_minigraph(
         output_directory=output_directory,
         gfa_path=output_gfa_path,
         fasta_path=output_fasta_path)
+
+    b = time.time()
+    time_elapsed_minigraph = b - a
 
     update_edge_weights_using_alignments(
         alleles=alleles,
@@ -1053,6 +1066,8 @@ def infer_haplotypes(ref_path, bam_paths, vcf_paths, chromosome, ref_start, ref_
 
     sys.stderr.write("Optimizing using %d paths with min coverage %d\n" % (len(paths), min_coverage))
 
+    a = time.time()
+
     bam_paths = list()
     for p,path in enumerate(fasta_paths):
         bam_path = run_minimap2(
@@ -1065,6 +1080,10 @@ def infer_haplotypes(ref_path, bam_paths, vcf_paths, chromosome, ref_start, ref_
             filename_prefix=str(p))
 
         bam_paths.append(bam_path)
+
+    b = time.time()
+
+    time_elapsed_minimap = b - a
 
     if generate_debug_alignments:
         chromosome_fasta_path = os.path.join(output_directory, chromosome + ".fasta")
@@ -1102,9 +1121,11 @@ def infer_haplotypes(ref_path, bam_paths, vcf_paths, chromosome, ref_start, ref_
 
     path_to_read_costs = defaultdict(int)
 
-    # For now, doouble counting softclips is allowed, because we don't really care,
+    # For now, double counting softclips is allowed, because we don't really care,
     # the alignment to the true haplotype should contain no clips
     non_match_ops = {'X','I','D','S'}
+
+    min_path_edit_distance = float("inf")
 
     # Because of the potential for supplementary alignments, need to first aggregate costs per read
     for bam_path in bam_paths:
@@ -1125,13 +1146,17 @@ def infer_haplotypes(ref_path, bam_paths, vcf_paths, chromosome, ref_start, ref_
                 continue
 
             # TODO: [fix] verify that the NM tag is not double-counting softclips/hardclips in a supplementary alignment?
+            # not sure how much this affects results, if there is a dup, it should be represented in the path already
             path_name = bam.header.get_reference_name(alignment.reference_id)
             path_id = paths.get_path_id(path_name)
             path_length = bam.get_reference_length(path_name)
 
-            # TODO: stop using a constant window expansion, and use tandem tracks instead
-            window_start = flank_length - 200
-            window_stop = path_length - flank_length + 200
+            window_start = flank_length
+            window_stop = path_length - flank_length
+
+            # TODO: remove this now that window criteria includes TRF track?
+            # window_start -= 200
+            # window_stop += 200
 
             alignment_start = alignment.reference_start
             alignment_stop = alignment.reference_end
@@ -1140,7 +1165,7 @@ def infer_haplotypes(ref_path, bam_paths, vcf_paths, chromosome, ref_start, ref_
             # If it's not spanning, add a fixed length penalty to break tie cases between haplotypes
             # TODO: fix this in the region selection process, not by having a constant
             if not alignment_start < window_start < window_stop < alignment_stop:
-                path_to_read_costs[(path_id,read_id)] += 500
+                path_to_read_costs[(path_id,read_id)] += 10
 
             if not alignment.is_secondary:
                 for ref_start,ref_stop,query_start,query_stop,operation,length in iterate_cigar(alignment):
@@ -1178,6 +1203,9 @@ def infer_haplotypes(ref_path, bam_paths, vcf_paths, chromosome, ref_start, ref_
                         total += cost
 
                 n += 1
+
+        if total < min_path_edit_distance:
+            min_path_edit_distance = total
 
         avg_edit_distance = total/n
         histogram.update(avg_edit_distance)
@@ -1224,6 +1252,7 @@ def infer_haplotypes(ref_path, bam_paths, vcf_paths, chromosome, ref_start, ref_
     costs_output_path = os.path.join(output_directory, "costs.csv")
     with open(costs_output_path, 'w') as file:
         file.write("path_id,read_id,sample_id,path_name,read_name,sample_name,value")
+        file.write('\n')
         for key,value in path_to_read_costs.items():
             path_id = str(key[0])
             path_name = paths.get_path_name(key[0])
@@ -1236,6 +1265,8 @@ def infer_haplotypes(ref_path, bam_paths, vcf_paths, chromosome, ref_start, ref_
             file.write(','.join([path_id,read_id,sample_id,path_name,read_name,sample_name,str(value)]))
             file.write('\n')
 
+    a = time.time()
+
     results = optimize_with_cpsat(
         path_to_read_costs=path_to_read_costs,
         reads=read_id_map,
@@ -1245,6 +1276,13 @@ def infer_haplotypes(ref_path, bam_paths, vcf_paths, chromosome, ref_start, ref_
         n_threads=30,
         output_dir=output_directory
     )
+
+    if len(results) == 0:
+        sys.stderr.write("WARNING: Region failed due to infeasibility of optimization: %s\n" % region_string)
+        return "Region failed due to infeasibility of optimization\n"
+
+    b = time.time()
+    time_elapsed_optimizer = b - a
 
     # TODO: replace this with average error rate per read?
     c_target = 0
@@ -1271,8 +1309,11 @@ def infer_haplotypes(ref_path, bam_paths, vcf_paths, chromosome, ref_start, ref_
         if cache.cost_a > c_stop:
             c_stop = cache.cost_a
 
+    print("----")
+    print("n=1 min cost:",min_path_edit_distance)
     print("n",n_start,n_stop)
     print("c",c_start,c_stop)
+    print()
 
     d_min = sys.maxsize
     c_min = None
@@ -1318,13 +1359,6 @@ def infer_haplotypes(ref_path, bam_paths, vcf_paths, chromosome, ref_start, ref_
     axes.set_xlabel("n_norm")
     axes.set_ylabel("c_norm")
 
-    summary_string = "n,%d\ncost_per_read,%.2f\ndistance,%.4f\n" % (n_min,c_per_read_min,d_min)
-    sys.stderr.write(summary_string)
-
-    summary_path = os.path.join(output_directory, "summary.txt")
-    with open(summary_path, 'w') as file:
-        file.write(summary_string)
-
     # Before writing the final output alleles, trim the flanking sequence (to make evaluation simpler)
     trim_flanks_from_ref_alleles(alleles, flank_length)
 
@@ -1361,6 +1395,26 @@ def infer_haplotypes(ref_path, bam_paths, vcf_paths, chromosome, ref_start, ref_
         sample_id_map=sample_id_map,
         read_id_map=read_id_map)
 
+    time_stop = time.time()
+    time_elapsed_total = time_stop - time_start
+
+    summary_string = "n,%d\n" % n_min + \
+                     "n_candidates,%d\n" % c_per_read_min + \
+                     "n_spanning_reads,%d\n" % len(spanning_reads) + \
+                     "cost_per_read,%.2f\n" % d_min + \
+                     "distance,%.4f\n" % len(paths) + \
+                     "time_elapsed_minigraph_s,%d\n" % time_elapsed_minigraph + \
+                     "time_elapsed_minimap_s,%d\n" % time_elapsed_minimap + \
+                     "time_elapsed_optimizer_s,%d\n" % time_elapsed_optimizer + \
+                     "time_elapsed_total_s,%d\n" % time_elapsed_total
+
+    sys.stderr.write(summary_string)
+    sys.stderr.write('\n')
+
+    summary_path = os.path.join(output_directory, "summary.txt")
+    with open(summary_path, 'w') as file:
+        file.write(summary_string)
+
     return summary_string
 
 
@@ -1378,7 +1432,14 @@ def parse_bed_regions(bed_path):
     regions = list()
     with open(bed_path, 'r') as file:
         for l,line in enumerate(file):
+            if len(line.strip()) == 0:
+                continue
+
             tokens = line.strip().split('\t')
+
+            if len(tokens) == 0:
+                continue
+
             chromosome = tokens[0]
             start = int(tokens[1])
             stop = int(tokens[2])
@@ -1388,14 +1449,45 @@ def parse_bed_regions(bed_path):
     return regions
 
 
-def write_config_to_json(bed_path, sample_names, ref_path, input_directory, output_directory, json_path):
+def write_config_to_json(
+        json_path,
+        sample_names,
+        ref_path,
+        flank_length,
+        min_coverage,
+        max_path_to_read_cost,
+        input_directory=None,
+        output_directory=None,
+        bed_path=None,
+        chromosome=None,
+        ref_start=None,
+        ref_stop=None):
+
     config = dict()
 
-    config["bed_path"] = bed_path
+    config["flank_length"] = flank_length
+    config["min_coverage"] = min_coverage
+    config["max_path_to_read_cost"] = max_path_to_read_cost
     config["sample_names"] = sample_names
     config["ref_path"] = ref_path
-    config["input_directory"] = input_directory
-    config["output_directory"] = output_directory
+
+    if input_directory is not None:
+        config["input_directory"] = input_directory
+
+    if output_directory is not None:
+        config["output_directory"] = output_directory
+
+    if bed_path is not None:
+        config["bed_path"] = bed_path
+
+    if chromosome is not None:
+        config["chromosome"] = chromosome
+
+    if ref_start is not None:
+        config["ref_start"] = ref_start
+
+    if ref_stop is not None:
+        config["ref_stop"] = ref_stop
 
     with open(json_path, 'w') as file:
         file.write(json.dumps(config, indent=4))
@@ -1406,6 +1498,9 @@ def read_config_from_json(json_path):
     with open(json_path, 'r') as file:
         config = json.load(file)
 
+    flank_length = config["flank_length"]
+    min_coverage = config["min_coverage"]
+    max_path_to_read_cost = config["max_path_to_read_cost"]
     bed_path = config["bed_path"]
     sample_names = config["sample_names"]
     ref_path = config["ref_path"]
@@ -1418,12 +1513,11 @@ def read_config_from_json(json_path):
     print(type(input_directory),input_directory)
     print(type(output_directory),output_directory)
 
-    return bed_path, sample_names, ref_path, input_directory, output_directory
+    return flank_length, min_coverage, max_path_to_read_cost, bed_path, sample_names, ref_path, input_directory, output_directory
 
 
-def main(json_path): # bed_path, sample_names, ref_path, input_directory, output_directory):
-
-    bed_path, sample_names, ref_path, input_directory, output_directory = read_config_from_json(json_path)
+def main(json_path):
+    flank_length, min_coverage, max_path_to_read_cost, bed_path, sample_names, ref_path, input_directory, output_directory = read_config_from_json(json_path)
 
     if not os.path.exists(output_directory):
         os.makedirs(output_directory)
@@ -1431,7 +1525,16 @@ def main(json_path): # bed_path, sample_names, ref_path, input_directory, output
         exit("ERROR: output directory exists already: %s" % output_directory)
 
     json_log_path = os.path.join(output_directory, "config.json")
-    write_config_to_json(bed_path, sample_names, ref_path, input_directory, output_directory, json_log_path)
+    write_config_to_json(
+        bed_path=bed_path,
+        sample_names=sample_names,
+        ref_path=ref_path,
+        flank_length=flank_length,
+        min_coverage=min_coverage,
+        max_path_to_read_cost=max_path_to_read_cost,
+        input_directory=input_directory,
+        output_directory=output_directory,
+        json_path=json_log_path)
 
     data_per_sample = defaultdict(dict)
 
@@ -1477,6 +1580,9 @@ def main(json_path): # bed_path, sample_names, ref_path, input_directory, output
             chromosome=region.contig_name,
             ref_start=region.start,
             ref_stop=region.stop,
+            flank_length=flank_length,
+            min_coverage=min_coverage,
+            max_path_to_read_cost=max_path_to_read_cost,
             sample_names=sample_names,
             output_directory=output_directory
         )
