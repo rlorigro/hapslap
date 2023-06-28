@@ -1,0 +1,30 @@
+// JSON does not support comments (sadly), all comments must be removed before running
+{
+  // This is a simple BED with the regions of interest (to be merged/genotyped)
+  "bed_path": "/home/ryan/code/hapslap/data/test/assorted_regions.bed",
+
+  // This must be the reference file that was used for alignment and variant calling
+  "ref_path": "/home/user/data/human/reference/chm13v2.0.fa",
+
+  // This directory must contain [sample_name].vcf.gz [sample_name].bam and their relevant index files
+  "input_directory": "/home/user/data/sample_bams_and_vcfs/",
+
+  // This can be any directory path, which must not exist yet
+  "output_directory": "/home/user/data/output/",
+
+  // This controls how much padding to add to the flanks of the region in order to capture reads during alignment. Padding is removed during output step.
+  "flank_length":5000,
+
+  // This controls the minimum number of reads aligned to the variant graph which must cover a path to consider it as a candidate for the optimizer
+  "min_coverage":2,
+
+  // This threshold limits the possible read/path assignment combinations by thresholding on edit distance (primarily useful for reducing time in the optimization step)
+  "max_path_to_read_cost":800,
+
+  // These samples must correspond to the BAM and VCF filenames
+  "sample_names": [
+    "HG002",
+    "HG005",
+    "HG00733"
+  ]
+}
