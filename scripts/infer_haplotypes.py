@@ -584,13 +584,14 @@ def optimize_with_cpsat(
 
         if status == cp_model.FEASIBLE or status == cp_model.OPTIMAL:
             results[i] = vars.get_cache(status=status, solver=solver)
-            i_prev = i
 
         o.cancel_timer_thread()
 
         if i_prev is not None and results[i].cost_a > results[i_prev].cost_a:
             sys.stderr.write("Iteration stopped at n=%d because score worsened\n" % i)
             break
+
+        i_prev = i
 
     for i,cache in results.items():
         print("%d,%d" % (i, cache.cost_a))
