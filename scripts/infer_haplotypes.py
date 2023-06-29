@@ -257,7 +257,9 @@ class ObjectiveEarlyStopping(cp_model.CpSolverSolutionCallback):
         self._timer.cancel()
 
     def cancel_timer_thread(self):
-        self._timer.cancel()
+        if self._timer is not None:
+            self._timer.cancel()
+
 
 class Variables:
     def __init__(self):
