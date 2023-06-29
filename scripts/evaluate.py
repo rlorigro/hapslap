@@ -302,7 +302,8 @@ def evaluate_upper_bound(ref_sequences, haplotype_fasta_path, output_dir, prefix
     for key in sorted(ref_sequences):
         ref_id_map.add(key)
 
-    for key in sorted(test_sequences):
+    # Order the test sequences by length
+    for key in sorted(test_sequences, key=lambda x: len(test_sequences[x]), reverse=True):
         test_id_map.add(key)
 
     pairs,lengths,results = cross_align_sequences(sequences=ref_sequences,n_threads=n_threads) #,output_dir=output_dir)
@@ -336,6 +337,7 @@ def evaluate_upper_bound(ref_sequences, haplotype_fasta_path, output_dir, prefix
         ref_labels[id] = name
 
     components = list(networkx.connected_components(graph))
+    components = sorted(components, key=lambda x: len(x), reverse=True)
 
     component_map = dict()
     for c,component in enumerate(components):
