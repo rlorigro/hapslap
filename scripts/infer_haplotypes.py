@@ -591,7 +591,8 @@ def optimize_with_cpsat(
             sys.stderr.write("Iteration stopped at n=%d because score worsened\n" % i)
             break
 
-        i_prev = i
+        if status == cp_model.FEASIBLE or status == cp_model.OPTIMAL:
+            i_prev = i
 
     for i,cache in results.items():
         print("%d,%d" % (i, cache.cost_a))
