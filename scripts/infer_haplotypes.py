@@ -559,6 +559,7 @@ def optimize_with_cpsat(
 
     status = None
     results = dict()
+    i_prev = None
 
     for i in range(1,max_feasible_haplotypes):
         print(i)
@@ -582,10 +583,12 @@ def optimize_with_cpsat(
         print(solver.ResponseStats())
 
         if status == cp_model.FEASIBLE or status == cp_model.OPTIMAL:
-            o.cancel_timer_thread()
             results[i] = vars.get_cache(status=status, solver=solver)
+            i_prev = i
 
-        if len(results) > 1 and i-1 in results and results[i].cost_a > results[i-1].cost_a:
+        o.cancel_timer_thread()
+
+        if i_prev is not None and results[i].cost_a > results[i_prev].cost_a:
             sys.stderr.write("Iteration stopped at n=%d because score worsened\n" % i)
             break
 
