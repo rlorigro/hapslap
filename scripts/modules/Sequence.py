@@ -1,3 +1,4 @@
+import sys
 import re
 
 
@@ -7,8 +8,12 @@ class Sequence:
         self.sequence = sequence
 
     def normalize_name(self):
-        tokens = re.split("#|_", self.name)
-        self.name = '_'.join([tokens[0],self.name[-1]])
+        try:
+            tokens = re.split("#|_", self.name)
+            self.name = '_'.join([tokens[0],self.name[-1]])
+        except Exception as e:
+            sys.stderr.write("ERROR: cannot normalize sequence name: '%s'\n" % self.name)
+            raise e
 
     def __eq__(self, other):
         if isinstance(other, Sequence):

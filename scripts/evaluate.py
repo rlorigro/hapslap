@@ -49,10 +49,11 @@ def iterate_fasta(path, force_upper_case=True, normalize_name=True):
                 if l > 0:
                     s = Sequence(name, sequence)
 
-                    if normalize_name:
-                        s.normalize_name()
+                    if len(s) != 0:
+                        if normalize_name:
+                            s.normalize_name()
 
-                    yield s
+                        yield s
 
                 name = line.strip()[1:].split(' ')[0]
                 sequence = ""
@@ -65,10 +66,11 @@ def iterate_fasta(path, force_upper_case=True, normalize_name=True):
 
     s = Sequence(name, sequence)
 
-    if normalize_name:
-        s.normalize_name()
+    if len(s) != 0:
+        if normalize_name:
+            s.normalize_name()
 
-    yield s
+        yield s
 
 
 def get_indel_distance_from_string(alignment: dict, minimum_indel_length=1):

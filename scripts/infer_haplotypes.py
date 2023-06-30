@@ -1,4 +1,4 @@
-from modules.Cigar import iterate_cigar,cigar_index_to_char
+from modules.Cigar import iterate_cigar,cigar_index_to_char,is_ref_move
 from modules.IterativeHistogram import IterativeHistogram
 from modules.IncrementalIdMap import IncrementalIdMap
 from modules.Bam import get_region_from_bam
@@ -31,6 +31,9 @@ from vcf import VCFReader
 import networkx
 import numpy
 import pysam
+
+import matplotlib
+matplotlib.use('Agg')
 
 
 def write_graph_to_gfa(output_path, graph, alleles):
@@ -580,7 +583,7 @@ def optimize_with_cpsat(
         o = ObjectiveEarlyStopping(60)
         status = solver.SolveWithSolutionCallback(model, o)
 
-        print("=====Stats:======")
+        print("----")
         print(solver.SolutionInfo())
         print(solver.ResponseStats())
 
@@ -772,9 +775,8 @@ def run_minigraph(output_directory, gfa_path, fasta_path):
         "-f", "0.25",
         "-r", "1000,20000",
         "-n", "3,3",
-        "-m", "30,20",
         "-p", str(0.5),
-        "-j", str(0.2),
+        "-j", str(0.5),
         "-x", "lr",
         "-o", output_path,
         gfa_path,
@@ -877,6 +879,7 @@ def infer_haplotypes(
     generate_debug_alignments = True
     n_threads = 30
     n_sort_threads = 4
+    parameter_size_cutoff = 10000
 
     region_string = chromosome + ":" + str(ref_start) + "-" + str(ref_stop)
 
@@ -1159,11 +1162,13 @@ def infer_haplotypes(
             path_length = bam.get_reference_length(path_name)
 
             window_start = flank_length
-            window_stop = path_length - flank_length
+            window_stop = path_length - flank_length + 1
 
             # TODO: remove this now that window criteria includes TRF track?
-            # window_start -= 200
-            # window_stop += 200
+            # TODO: Sometimes unpredictability in the alignment pushes a large indel just beyond the window...
+            # this is added as a margin of safety to catch those...
+            window_start -= 40
+            window_stop += 40
 
             alignment_start = alignment.reference_start
             alignment_stop = alignment.reference_end
@@ -1193,19 +1198,27 @@ def infer_haplotypes(
 
                     # Cigar covers entire window
                     elif ref_start <= window_start < window_stop <= ref_stop:
-                        cost = (window_stop - window_start + 1) * int(is_non_match)
+                        cost = (window_stop - window_start) * int(is_non_match)
                         path_to_read_costs[(path_id,read_id)] += cost
                         total += cost
 
                     # Cigar is overlapping the start of the window
                     elif ref_start <= window_start <= ref_stop:
-                        cost = (ref_stop - window_start + 1) * int(is_non_match)
+                        if is_ref_move[operation]:
+                            cost = (ref_stop - window_start) * int(is_non_match)
+                        else:
+                            cost = length * int(is_non_match)
+
                         path_to_read_costs[(path_id,read_id)] += cost
                         total += cost
 
                     # Cigar is overlapping the end of the window
                     elif ref_start <= window_stop <= ref_stop:
-                        cost = (window_stop - ref_start + 1) * int(is_non_match)
+                        if is_ref_move[operation]:
+                            cost = (window_stop - ref_start) * int(is_non_match)
+                        else:
+                            cost = length * int(is_non_match)
+
                         path_to_read_costs[(path_id,read_id)] += cost
                         total += cost
 
@@ -1221,6 +1234,10 @@ def infer_haplotypes(
     for key in list(path_to_read_costs.keys()):
         if path_to_read_costs[key] > max_path_to_read_cost:
             del path_to_read_costs[key]
+
+    if len(path_to_read_costs) > parameter_size_cutoff:
+        print("WARNING: skipping very large optimization problem: " + str(region_string))
+        return "Region skipped because it has very large number of variables: " + str(len(path_to_read_costs)) + "\n"
 
     axes.plot(histogram.get_bin_centers(), histogram.get_histogram(), color="#007cbe")
 
