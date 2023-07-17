@@ -1,11 +1,10 @@
 import multiprocessing
 
-from modules.IncrementalIdMap import IncrementalIdMap
 from modules.IterativeHistogram import IterativeHistogram
+from modules.IncrementalIdMap import IncrementalIdMap
 from modules.Cigar import get_haplotypes_of_region
-from modules.Bam import get_region_from_bam
+from modules.Bam import download_regions_of_bam
 from modules.Sequence import Sequence
-from modules.Authenticator import *
 
 from itertools import combinations
 from multiprocessing import Pool
@@ -360,6 +359,8 @@ def evaluate_upper_bound(ref_sequences, haplotype_fasta_path, output_dir, prefix
 
     matrix = numpy.zeros([len(ref_id_map),len(test_id_map)])
 
+    feasible_samples = set()
+
     for i in range(len(results)):
         name_ref = pairs[i][0].name
         name_test = pairs[i][1].name
@@ -371,6 +372,9 @@ def evaluate_upper_bound(ref_sequences, haplotype_fasta_path, output_dir, prefix
         id_test = test_id_map.get_id(name_test)
 
         matrix[id_to_cluster_map[id_ref]][id_test] = d
+
+        if d < distance_threshold:
+            feasible_samples.add(name_ref)
 
     fig = pyplot.figure()
     axes = pyplot.axes()
@@ -399,64 +403,7 @@ def evaluate_upper_bound(ref_sequences, haplotype_fasta_path, output_dir, prefix
     fig.savefig(output_path, dpi=500, bbox_inches='tight')
     pyplot.close('all')
 
-
-def download_regions_of_bam(regions, tsv_path, column_names, output_directory, n_threads, samples=None):
-    token = GoogleToken()
-
-    output_directory = os.path.abspath(output_directory)
-
-    if not os.path.exists(output_directory):
-        os.makedirs(output_directory)
-
-    df = pandas.read_table(tsv_path, sep='\t', header=0)
-
-    n_rows, n_cols = df.shape
-
-    if type(regions) == set:
-        regions = list(regions)
-
-    # Samtools compatible formatting of regions
-    region_string = ' '.join(regions)
-
-    file_tag = region_string
-
-    # If too many regions were specified to make a sensible file path, use a deterministic hash identifier instead
-    if len(file_tag) > 64:
-        sha = hashlib.sha256()
-        sha.update(region_string.encode())
-        file_tag = sha.hexdigest()
-
-        sys.stderr.write("Using substitute hash for regions:%s\n\tregions:%s\n" % (file_tag, region_string))
-
-    args = list()
-
-    if samples is not None:
-        samples = set(samples)
-
-    for column_name in column_names:
-        for i in range(n_rows):
-            sample_name = df.iloc[i][0]
-
-            if samples is not None and sample_name not in samples:
-                continue
-
-            print(sample_name)
-
-            gs_uri = df.iloc[i][column_name]
-
-            # Each sample downloads its regions to its own subdirectory to prevent overwriting (filenames are by region)
-            output_subdirectory = os.path.join(output_directory, sample_name)
-
-            if not os.path.exists(output_subdirectory):
-                os.makedirs(output_subdirectory)
-
-            filename = sample_name + "_" + column_name + "_" + file_tag + ".bam"
-            args.append([output_subdirectory,gs_uri,file_tag,token,600,filename])
-
-    with Pool(n_threads) as pool:
-        download_results = pool.starmap(get_region_from_bam, args)
-
-    return download_results
+    return feasible_samples
 
 
 def get_all_relevant_chromosome_names(test_dirs):
@@ -503,6 +450,10 @@ def evaluate_test_haplotypes(
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
+    summary = dict()
+
+    summary_path = os.path.join(output_dir, "summary.csv")
+
     for test_dir in test_dirs:
         print("Evaluating: " + test_dir)
         config_path = os.path.join(test_dir,"config.json")
@@ -537,7 +488,7 @@ def evaluate_test_haplotypes(
         ref_sequences = {x.name:x for x in results if x is not None}
         test_sequences = {x.name:x for x in iterate_fasta(test_path)}
 
-        evaluate_upper_bound(ref_sequences, all_haplotypes_path, output_dir, prefix, flank_length, distance_threshold, n_threads)
+        feasible_samples = evaluate_upper_bound(ref_sequences, all_haplotypes_path, output_dir, prefix, flank_length, distance_threshold, n_threads)
 
         duplicated_homozygous_haps = set()
         test_sequences,test_duplicated = duplicate_homozygous_haps(test_sequences)
@@ -678,6 +629,8 @@ def evaluate_test_haplotypes(
         for id in sorted(range(len(id_map)), key=lambda x: component_map[x]):
             id_to_cluster_map[id] = len(id_to_cluster_map)
 
+        supported_samples = set()
+
         output_path = os.path.join(output_dir,"alignments.txt")
         with open(output_path, 'w') as file:
             for i in range(len(results)):
@@ -705,6 +658,8 @@ def evaluate_test_haplotypes(
 
                 if d <= distance_threshold and w != 0:
                     graph.add_edge(id_ref, id_test, weight=w)
+                    if name_ref in feasible_samples:
+                        supported_samples.add(name_ref)
 
         fig = pyplot.figure()
         axes = pyplot.axes()
@@ -764,6 +719,18 @@ def evaluate_test_haplotypes(
         output_path = os.path.join(output_dir,prefix + "_confusion.png")
         fig.savefig(output_path, dpi=500, bbox_inches='tight')
         pyplot.close('all')
+
+        if len(feasible_samples) == 0:
+            portion_supported = 0
+        else:
+            portion_supported = float(len(supported_samples))/float(len(feasible_samples))
+
+        summary[prefix] = portion_supported
+
+        with open(summary_path, 'a') as file:
+            for item in summary.items():
+                file.write(','.join(list(map(str,item))))
+                file.write('\n')
 
 
 def main(

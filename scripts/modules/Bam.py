@@ -1,4 +1,9 @@
+from .Authenticator import GoogleToken
+import pandas
+
+from multiprocessing import Pool
 import subprocess
+import hashlib
 import sys
 import os
 import re
@@ -89,3 +94,67 @@ def get_region_from_bam(output_directory, bam_path, region_string, tokenator, ti
 
     return local_bam_path
 
+
+def download_regions_of_bam(regions, tsv_path, column_names, output_directory, n_threads, samples=None):
+    token = GoogleToken()
+
+    output_directory = os.path.abspath(output_directory)
+
+    if not os.path.exists(output_directory):
+        os.makedirs(output_directory)
+
+    df = pandas.read_table(tsv_path, sep='\t', header=0)
+
+    n_rows, n_cols = df.shape
+
+    region_string = None
+
+    if type(regions) == set:
+        regions = list(regions)
+
+        # Samtools compatible formatting of regions
+        region_string = ' '.join(regions)
+
+    elif type(regions) == str:
+        region_string = regions
+
+    file_tag = region_string
+    file_tag = file_tag.replace(' ','_').replace(':','_')
+
+    # If too many regions were specified to make a sensible file path, use a deterministic hash identifier instead
+    if len(file_tag) > 64:
+        sha = hashlib.sha256()
+        sha.update(region_string.encode())
+        file_tag = sha.hexdigest()
+
+        sys.stderr.write("Using substitute hash for regions:%s\n\tregions:%s\n" % (file_tag, region_string))
+
+    args = list()
+
+    if samples is not None:
+        samples = set(samples)
+
+    for column_name in column_names:
+        for i in range(n_rows):
+            sample_name = df.iloc[i][0]
+
+            if samples is not None and sample_name not in samples:
+                continue
+
+            print(sample_name)
+
+            gs_uri = df.iloc[i][column_name]
+
+            # Each sample downloads its regions to its own subdirectory to prevent overwriting (filenames are by region)
+            output_subdirectory = os.path.join(output_directory, sample_name)
+
+            if not os.path.exists(output_subdirectory):
+                os.makedirs(output_subdirectory)
+
+            filename = sample_name + "_" + column_name + "_" + file_tag + ".bam"
+            args.append([output_subdirectory,gs_uri,region_string,token,600,filename])
+
+    with Pool(n_threads) as pool:
+        download_results = pool.starmap(get_region_from_bam, args)
+
+    return download_results

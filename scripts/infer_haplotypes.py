@@ -483,7 +483,8 @@ def optimize_with_cpsat(
     # Define read assignment variables
     for edge in path_to_read_costs.keys():
         # 'edge' is a tuple with path_id,read_id
-        vars.path_to_read[edge] = model.NewIntVar(0, 1, "p%dr%d" % edge)
+        # vars.path_to_read[edge] = model.NewIntVar(0, 1, "p%dr%d" % edge)
+        vars.path_to_read[edge] = model.NewBoolVar("p%dr%d" % edge)
 
     # Constraint: each read must map to only one haplotype/path
     # Only consider pairs that have a cost assigned to them
