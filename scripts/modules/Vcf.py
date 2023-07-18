@@ -39,7 +39,7 @@ class Allele:
 Given any number of VCFs, build a set of Allele objects which are merged by their hash(sequence,start,stop), retaining
 sample names for all merged alleles
 """
-def get_alleles_from_vcfs(ref_path, vcf_paths, chromosome, ref_start=None, ref_stop=None, debug=False):
+def get_alleles_from_vcfs(ref_path, data_per_sample, chromosome, ref_start=None, ref_stop=None, debug=False):
     region_string = chromosome
 
     if ref_start is not None and ref_stop is not None:
@@ -49,8 +49,8 @@ def get_alleles_from_vcfs(ref_path, vcf_paths, chromosome, ref_start=None, ref_s
 
     alleles = dict()
 
-    for vcf_path in vcf_paths:
-        sample_name = os.path.basename(vcf_path).split("_")[0]
+    for sample_name,data in data_per_sample.items():
+        vcf_path = data["vcf"]
 
         with open(vcf_path, 'rb') as file:
             if debug:
@@ -58,7 +58,11 @@ def get_alleles_from_vcfs(ref_path, vcf_paths, chromosome, ref_start=None, ref_s
 
             vcf = VCFReader(file)
 
-            records = vcf.fetch(region_string)
+            try:
+                records = vcf.fetch(region_string)
+            except ValueError:
+                print("WARNING: Skipping sample because has no VCF entries: " + sample_name)
+                continue
 
             for record in records:
                 if debug:
@@ -145,12 +149,12 @@ def get_alleles_from_vcfs(ref_path, vcf_paths, chromosome, ref_start=None, ref_s
     return list(alleles.values())
 
 
-def vcf_to_graph(ref_path, vcf_paths, chromosome, ref_start, ref_stop, ref_sample_name, flank_length):
+def vcf_to_graph(ref_path, data_per_sample, chromosome, ref_start, ref_stop, ref_sample_name, flank_length):
     ref_sequence = FastaFile(ref_path).fetch(chromosome)
 
     alleles = get_alleles_from_vcfs(
         ref_path=ref_path,
-        vcf_paths=vcf_paths,
+        data_per_sample=data_per_sample,
         chromosome=chromosome,
         ref_start=ref_start,
         ref_stop=ref_stop

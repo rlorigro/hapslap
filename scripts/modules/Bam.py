@@ -95,7 +95,7 @@ def get_region_from_bam(output_directory, bam_path, region_string, tokenator, ti
     return local_bam_path
 
 
-def download_regions_of_bam(regions, tsv_path, column_names, output_directory, n_threads, samples=None):
+def download_regions_of_bam(regions, tsv_path, column_names, output_directory, n_threads, samples=None, as_dict=False):
     token = GoogleToken()
 
     output_directory = os.path.abspath(output_directory)
@@ -107,16 +107,14 @@ def download_regions_of_bam(regions, tsv_path, column_names, output_directory, n
 
     n_rows, n_cols = df.shape
 
-    region_string = None
+    if type(regions) == str:
+        regions = regions.split(' ')
 
-    if type(regions) == set:
+    elif type(regions) == set:
         regions = list(regions)
 
-        # Samtools compatible formatting of regions
-        region_string = ' '.join(regions)
-
-    elif type(regions) == str:
-        region_string = regions
+    # Samtools compatible formatting of regions
+    region_string = ' '.join(regions)
 
     file_tag = region_string
     file_tag = file_tag.replace(' ','_').replace(':','_')
@@ -130,6 +128,7 @@ def download_regions_of_bam(regions, tsv_path, column_names, output_directory, n
         sys.stderr.write("Using substitute hash for regions:%s\n\tregions:%s\n" % (file_tag, region_string))
 
     args = list()
+    result_samples = list()
 
     if samples is not None:
         samples = set(samples)
@@ -153,8 +152,13 @@ def download_regions_of_bam(regions, tsv_path, column_names, output_directory, n
 
             filename = sample_name + "_" + column_name + "_" + file_tag + ".bam"
             args.append([output_subdirectory,gs_uri,region_string,token,600,filename])
+            result_samples.append(sample_name)
 
+    results = None
     with Pool(n_threads) as pool:
-        download_results = pool.starmap(get_region_from_bam, args)
+        results = pool.starmap(get_region_from_bam, args)
 
-    return download_results
+    if as_dict:
+        results = {a:b for a,b in zip(result_samples, results)}
+
+    return results

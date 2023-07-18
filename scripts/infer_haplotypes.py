@@ -2,6 +2,7 @@ from modules.Cigar import iterate_cigar,cigar_index_to_char,is_ref_move
 from modules.IterativeHistogram import IterativeHistogram
 from modules.IncrementalIdMap import IncrementalIdMap
 from modules.Bam import get_region_from_bam
+from modules.Bed import parse_bed_regions
 from modules.Align import run_minimap2
 from modules.Vcf import vcf_to_graph
 from modules.Authenticator import *
@@ -864,15 +865,13 @@ def trim_flanks_from_ref_alleles(alleles, flank_length):
 
 def infer_haplotypes(
         ref_path,
-        bam_paths,
-        vcf_paths,
+        data_per_sample,
         chromosome,
         ref_start,
         ref_stop,
         flank_length,
         min_coverage,
         max_path_to_read_cost,
-        sample_names,
         output_directory):
 
     time_start = time.time()
@@ -896,7 +895,7 @@ def infer_haplotypes(
         chromosome=chromosome,
         ref_start=ref_start,
         ref_stop=ref_stop,
-        sample_names=sample_names,
+        sample_names=list(data_per_sample.keys()),
         ref_path=ref_path,
         flank_length=flank_length,
         min_coverage=min_coverage,
@@ -912,7 +911,7 @@ def infer_haplotypes(
 
     graph,alleles = vcf_to_graph(
         ref_path=ref_path,
-        vcf_paths=vcf_paths,
+        data_per_sample=data_per_sample,
         chromosome=chromosome,
         ref_start=ref_start,
         ref_stop=ref_stop,
@@ -1006,12 +1005,13 @@ def infer_haplotypes(
     sample_to_reads = defaultdict(list)
     read_id_map = IncrementalIdMap()
 
-    for path in bam_paths:
-        print("bam_path:", path)
+    for sample_name,data in data_per_sample.items():
+        bam_path = data["bam"]
+        print("bam_path:", bam_path)
 
         region_bam_path = get_region_from_bam(
             output_directory=output_directory,
-            bam_path=path,
+            bam_path=bam_path,
             region_string=region_string,
             tokenator=tokenator)
 
@@ -1020,8 +1020,6 @@ def infer_haplotypes(
         for read_name in read_names:
             read_id_map.add(read_name)
 
-        # TODO: catalog samples in a more robust way
-        sample_name = os.path.basename(path).replace(".bam","").split('_')[0]
         sample_to_reads[sample_name] = read_names
 
         # This repeatedly appends one FASTA file
@@ -1246,7 +1244,7 @@ def infer_haplotypes(
     read_id_map.write_to_file(reads_csv_path)
 
     sample_id_map = IncrementalIdMap()
-    for name in sample_names:
+    for name in data_per_sample.keys():
         sample_id_map.add(name)
 
     sample_id_path = os.path.join(output_directory, "samples.csv")
@@ -1325,7 +1323,7 @@ def infer_haplotypes(
     c_start = sys.maxsize
     c_stop = 0
     n_start = 1
-    n_stop = len(sample_names)
+    n_stop = len(data_per_sample.keys())
 
     for n,cache in results.items():
         if cache.cost_a < c_start:
@@ -1443,37 +1441,6 @@ def infer_haplotypes(
     return summary_string
 
 
-class Region:
-    def __init__(self, chromosome_name, start, stop):
-        self.contig_name = chromosome_name
-        self.start = start
-        self.stop = stop
-
-    def __str__(self):
-        return "%s_%d-%d" % (self.contig_name, self.start, self.stop)
-
-
-def parse_bed_regions(bed_path):
-    regions = list()
-    with open(bed_path, 'r') as file:
-        for l,line in enumerate(file):
-            if len(line.strip()) == 0:
-                continue
-
-            tokens = line.strip().split('\t')
-
-            if len(tokens) == 0:
-                continue
-
-            chromosome = tokens[0]
-            start = int(tokens[1])
-            stop = int(tokens[2])
-
-            regions.append(Region(chromosome, start, stop))
-
-    return regions
-
-
 def write_config_to_json(
         json_path,
         sample_names,
@@ -1529,6 +1496,8 @@ def read_config_from_json(json_path):
     bed_path = config["bed_path"]
     sample_names = config["sample_names"]
     ref_path = config["ref_path"]
+
+    # TODO: refactor
     input_directory = config["input_directory"]
     output_directory = config["output_directory"]
 
@@ -1600,15 +1569,13 @@ def main(json_path):
     for region in regions:
         summary_string = infer_haplotypes(
             ref_path=ref_path,
-            bam_paths=bam_paths,
-            vcf_paths=vcf_paths,
+            data_per_sample=data_per_sample,
             chromosome=region.contig_name,
             ref_start=region.start,
             ref_stop=region.stop,
             flank_length=flank_length,
             min_coverage=min_coverage,
             max_path_to_read_cost=max_path_to_read_cost,
-            sample_names=sample_names,
             output_directory=output_directory
         )
 
