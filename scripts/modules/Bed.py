@@ -11,6 +11,9 @@ class Region:
 def iter_bed_items(path):
     with open(path, 'r') as file:
         for l,line in enumerate(file):
+            if len(line) <= 1:
+                continue
+
             tokens = line.strip().split()
             contig = tokens[0]
             start = int(tokens[1])

@@ -6,7 +6,7 @@ import argparse
 import re
 
 
-def infer_haplotypes_for_all_regions(data_per_sample, bed_path, flank_length, min_coverage, max_path_to_read_cost, ref_path, output_directory):
+def infer_haplotypes_for_all_regions(data_per_sample, bed_path, interval_pad_length, flank_length, min_coverage, max_path_to_read_cost, ref_path, n_threads, parameter_size_cutoff, output_directory):
     regions = parse_bed_regions(bed_path)
 
     summary_strings = list()
@@ -17,10 +17,13 @@ def infer_haplotypes_for_all_regions(data_per_sample, bed_path, flank_length, mi
             chromosome=region.contig_name,
             ref_start=region.start,
             ref_stop=region.stop,
+            interval_pad_length=interval_pad_length,
             flank_length=flank_length,
             min_coverage=min_coverage,
             max_path_to_read_cost=max_path_to_read_cost,
-            output_directory=output_directory
+            output_directory=output_directory,
+            n_threads=n_threads,
+            parameter_size_cutoff=parameter_size_cutoff
         )
 
         summary_strings.append(summary_string)
@@ -71,12 +74,21 @@ def generate_sv_calls(
     return vcf_paths_per_sample
 
 
-def run_hapslap(n_threads, tsv_path, column_name, ref_path, region_string, interval_bed_path, output_directory, cache_directory):
-    interval_padding = 150
-    max_interval_length = 15000
-    flank_length = 5000
-    min_coverage = 2
-    max_path_to_read_cost = 250
+def run_hapslap(
+        n_threads,
+        tsv_path,
+        column_name,
+        ref_path,
+        region_string,
+        interval_bed_path,
+        output_directory,
+        cache_directory,
+        interval_padding,
+        interval_max_length,
+        flank_length,
+        min_coverage,
+        max_path_to_read_cost,
+        parameter_size_cutoff):
 
     bams_per_sample = localize_bams_per_sample(
         cache_directory,
@@ -105,16 +117,20 @@ def run_hapslap(n_threads, tsv_path, column_name, ref_path, region_string, inter
         bed_path=interval_bed_path,
         bed_name="tandems",
         padding=interval_padding,
-        max_interval_length=max_interval_length)
+        max_interval_length=interval_max_length)
 
     infer_haplotypes_for_all_regions(
         data_per_sample=data_per_sample,
         bed_path=bed_path,
+        interval_pad_length=interval_padding,
         flank_length=flank_length,
         min_coverage=min_coverage,
         max_path_to_read_cost=max_path_to_read_cost,
         ref_path=ref_path,
-        output_directory=output_directory)
+        output_directory=output_directory,
+        n_threads=n_threads,
+        parameter_size_cutoff=parameter_size_cutoff
+    )
 
 
 def parse_comma_separated_string(s):
@@ -180,7 +196,55 @@ if __name__ == "__main__":
         required=False,
         default="'bam_vs_chm13'",
         type=parse_comma_separated_string,
-        help="Which is the relevant column of the Terra-style TSV which contains the BAM of aligned reads to the reference"
+        help="The relevant column name of the Terra-style TSV which contains the BAM of aligned reads to the reference"
+    )
+
+    parser.add_argument(
+        "-p","--interval_padding",
+        required=False,
+        default=150,
+        type=int,
+        help="Require at least this many bases between separate consecutive windows/intervals in the genome"
+    )
+
+    parser.add_argument(
+        "-w","--interval_max_length",
+        required=False,
+        default=15000,
+        type=int,
+        help="Don't attempt to call any windows larger than this (generally should be chosen such that reads may span)"
+    )
+
+    parser.add_argument(
+        "-f","--flank_length",
+        required=False,
+        default=5000,
+        type=int,
+        help="How much anchoring flank sequence to use for aligning reads to a window. Only affects intermediate steps."
+    )
+
+    parser.add_argument(
+        "-m","--min_coverage",
+        required=False,
+        default=2,
+        type=int,
+        help="Only consider paths in the variant graph which have at least this many 'best' alignments produced by aligning reads with a graph aligner"
+    )
+
+    parser.add_argument(
+        "-r","--max_path_to_read_cost",
+        required=False,
+        default=250,
+        type=int,
+        help="In the optimization, don't consider assignments of reads to a path if the edit distance is greater than this"
+    )
+
+    parser.add_argument(
+        "-s","--parameter_size_cutoff",
+        required=False,
+        default=10000,
+        type=int,
+        help="Don't try to optimize problem with more than this many parameters"
     )
 
     args = parser.parse_args()
@@ -194,4 +258,10 @@ if __name__ == "__main__":
         cache_directory=args.cache_dir,
         region_string=args.region,
         interval_bed_path=args.bed,
+        interval_padding=args.interval_padding,
+        interval_max_length=args.interval_max_length,
+        flank_length=args.flank_length,
+        min_coverage=args.min_coverage,
+        max_path_to_read_cost=args.max_path_to_read_cost,
+        parameter_size_cutoff=args.parameter_size_cutoff
     )

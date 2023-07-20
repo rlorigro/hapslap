@@ -10,6 +10,7 @@ from modules.Paths import Paths
 from modules.GsUri import *
 
 from collections import defaultdict,Counter
+from itertools import combinations
 from multiprocessing import Pool
 from copy import deepcopy,copy
 from threading import Timer
@@ -863,23 +864,94 @@ def trim_flanks_from_ref_alleles(alleles, flank_length):
     alleles[stop_node].sequence = s_stop
 
 
+'''
+Very dumb (expensive) way to test a sample's read-to-path edge set for feasibility under the diploid constraint 
+'''
+def is_feasible(edges):
+    all_reads = {read_id for path_id,read_id in edges}
+    all_paths = {path_id for path_id,read_id in edges}
+
+    # Start with the easier solution: a single path covers all reads
+    feasible = False
+    for p in all_paths:
+        reads = copy(all_reads)
+
+        for path_id,read_id in edges:
+            if path_id == p:
+                if read_id in reads:
+                    reads.remove(read_id)
+
+        if len(reads) == 0:
+            feasible = True
+            break
+
+    # If the easy solution works, exit early
+    if feasible:
+        return True
+
+    # For every possible 2-path solution and check whether all reads are covered
+    for a,b in combinations(all_paths,2):
+        reads = copy(all_reads)
+
+        for path_id,read_id in edges:
+            if path_id == a or path_id == b:
+                if read_id in reads:
+                    reads.remove(read_id)
+
+        if len(reads) == 0:
+            feasible = True
+            break
+
+    return feasible
+
+
+def filter_costs(path_to_read_costs, read_id_map, read_to_sample, max_path_to_read_cost):
+    samplewise_costs = defaultdict(list)
+    for [path_id,read_id],cost in path_to_read_costs.items():
+        read_name = read_id_map.get_name(read_id)
+        sample_name = read_to_sample[read_name]
+        samplewise_costs[sample_name].append((path_id,read_id,cost))
+
+    for sample_name,costs in samplewise_costs.items():
+        edges = {(path_id,read_id) for path_id,read_id,cost in costs}
+        edges_to_be_removed = list()
+
+        # Remove edges from this sample in order of greatest until:
+        # the cost is below the threshold OR it causes infeasibility under the diploid constraint
+        for path_id,read_id,cost in sorted(costs, key=lambda x: x[-1], reverse=True):
+            if cost < max_path_to_read_cost:
+                break
+
+            edges.remove((path_id,read_id))
+            if not is_feasible(edges):
+                edges.add((path_id,read_id))
+                break
+
+            edges_to_be_removed.append((path_id,read_id))
+
+        for e in edges_to_be_removed:
+            del path_to_read_costs[e]
+
+    return path_to_read_costs
+
 def infer_haplotypes(
         ref_path,
         data_per_sample,
         chromosome,
         ref_start,
         ref_stop,
+        interval_pad_length,
         flank_length,
         min_coverage,
         max_path_to_read_cost,
-        output_directory):
+        output_directory,
+        n_threads,
+        parameter_size_cutoff):
 
     time_start = time.time()
 
     generate_debug_alignments = True
-    n_threads = 30
     n_sort_threads = 4
-    parameter_size_cutoff = 10000
 
     region_string = chromosome + ":" + str(ref_start) + "-" + str(ref_stop)
 
@@ -1002,6 +1074,7 @@ def infer_haplotypes(
 
     output_fasta_path = os.path.join(output_directory, "reads.fasta")
 
+    # sample --> [read_name_0,read_name_1,...]
     sample_to_reads = defaultdict(list)
     read_id_map = IncrementalIdMap()
 
@@ -1163,11 +1236,11 @@ def infer_haplotypes(
             window_start = flank_length
             window_stop = path_length - flank_length + 1
 
-            # TODO: remove this now that window criteria includes TRF track?
-            # TODO: Sometimes unpredictability in the alignment pushes a large indel just beyond the window...
-            # this is added as a margin of safety to catch those...
-            window_start -= 40
-            window_stop += 40
+            # Sometimes unpredictability in the alignment pushes a large indel just beyond the window...
+            # this is added as a margin of safety to catch those. Since the windows are built requiring an empty
+            # padding between them, we can use that to decide how much space is safe to look for relevant edits
+            window_start -= interval_pad_length
+            window_stop += interval_pad_length
 
             alignment_start = alignment.reference_start
             alignment_stop = alignment.reference_end
@@ -1229,17 +1302,6 @@ def infer_haplotypes(
         avg_edit_distance = total/n
         histogram.update(avg_edit_distance)
 
-    # Filter edges in model that have unreasonably large costs
-    for key in list(path_to_read_costs.keys()):
-        if path_to_read_costs[key] > max_path_to_read_cost:
-            del path_to_read_costs[key]
-
-    if len(path_to_read_costs) > parameter_size_cutoff:
-        print("WARNING: skipping very large optimization problem: " + str(region_string))
-        return "Region skipped because it has very large number of variables: " + str(len(path_to_read_costs)) + "\n"
-
-    axes.plot(histogram.get_bin_centers(), histogram.get_histogram(), color="#007cbe")
-
     reads_csv_path = os.path.join(output_directory, "reads.csv")
     read_id_map.write_to_file(reads_csv_path)
 
@@ -1271,6 +1333,14 @@ def infer_haplotypes(
     for sample,reads in sample_to_reads.items():
         for read in reads:
             read_to_sample[read] = sample
+
+    filter_costs(path_to_read_costs, read_id_map, read_to_sample, max_path_to_read_cost)
+
+    if len(path_to_read_costs) > parameter_size_cutoff:
+        print("WARNING: skipping very large optimization problem: " + str(region_string))
+        return "Region skipped because it has very large number of variables: " + str(len(path_to_read_costs)) + "\n"
+
+    axes.plot(histogram.get_bin_centers(), histogram.get_histogram(), color="#007cbe")
 
     costs_output_path = os.path.join(output_directory, "costs.csv")
     with open(costs_output_path, 'w') as file:
@@ -1568,6 +1638,9 @@ def main(json_path):
     summary_strings = list()
     for region in regions:
         summary_string = infer_haplotypes(
+            n_threads=30,
+            parameter_size_cutoff=10000,
+            interval_pad_length=150,
             ref_path=ref_path,
             data_per_sample=data_per_sample,
             chromosome=region.contig_name,
