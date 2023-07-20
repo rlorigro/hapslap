@@ -491,6 +491,9 @@ def evaluate_test_haplotypes(
             n_threads=n_threads
         )
 
+        if results is None:
+            continue
+
         ref_sequences = {x.name:x for x in results if x is not None}
         test_sequences = {x.name:x for x in iterate_fasta(test_path)}
 
