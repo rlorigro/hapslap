@@ -582,7 +582,7 @@ def optimize_with_cpsat(
                 model.AddHint(var, solver.Value(var))
 
         # It's critical to STOP THE TIMER after this finishes because it relies on a thread which will run on
-        # past the optimal solution for as long as the timer is set, potentially starving future iterations of threads.
+        # past the solution for as long as the timer is set, potentially starving future iterations of threads.
         o = ObjectiveEarlyStopping(60)
         status = solver.SolveWithSolutionCallback(model, o)
 
@@ -595,11 +595,11 @@ def optimize_with_cpsat(
 
         o.cancel_timer_thread()
 
-        if i_prev is not None and results[i].cost_a > results[i_prev].cost_a:
-            sys.stderr.write("Iteration stopped at n=%d because score worsened\n" % i)
-            break
-
         if status == cp_model.FEASIBLE or status == cp_model.OPTIMAL:
+            if i_prev is not None and results[i].cost_a > results[i_prev].cost_a:
+                sys.stderr.write("Iteration stopped at n=%d because score worsened\n" % i)
+                break
+
             i_prev = i
 
     for i,cache in results.items():
@@ -933,6 +933,7 @@ def filter_costs(path_to_read_costs, read_id_map, read_to_sample, max_path_to_re
             del path_to_read_costs[e]
 
     return path_to_read_costs
+
 
 def infer_haplotypes(
         ref_path,
