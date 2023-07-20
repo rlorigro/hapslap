@@ -460,6 +460,9 @@ def evaluate_test_haplotypes(
         test_path = os.path.join(test_dir, "assigned_haplotypes.fasta")
         all_haplotypes_path = os.path.join(test_dir, "all_paths.fasta")
 
+        if not os.path.exists(config_path):
+            continue
+
         if not os.path.exists(test_path):
             continue
 
@@ -809,6 +812,7 @@ if __name__ == "__main__":
         help="Default clustering threshold for distance between haplotypes"
     )
 
+    # TODO: refactor
     parser.add_argument(
         "--tsv",
         required=True,

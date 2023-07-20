@@ -688,7 +688,8 @@ def enumerate_paths_using_alignments(alleles, gaf_path: str, output_directory: s
                 file.write("\n")
 
     if len(paths) == 0:
-        raise Exception("ERROR: no passing paths in alignment graph")
+        sys.stderr.write("ERROR: no passing paths in alignment graph\n")
+        return None, None
 
     return paths, output_paths
 
@@ -1146,6 +1147,9 @@ def infer_haplotypes(
         min_coverage=min_coverage,
         read_subset=spanning_reads
     )
+
+    if paths is None:
+        return "No viable paths in region\n"
 
     sys.stderr.write("Optimizing using %d paths with min coverage %d\n" % (len(paths), min_coverage))
 

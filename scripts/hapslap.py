@@ -50,8 +50,9 @@ def localize_bams_per_sample(cache_directory, regions, tsv_path, column_names, n
     )
 
     for path in bam_paths_per_sample.values():
-        # index BAMs but don't over-parallelize it (anecdotally worsens performance?)
-        index_bam(path,n_threads=min(16,n_threads))
+        if not os.path.exists(path + ".bai"):
+            # index BAMs but don't over-parallelize it (anecdotally worsens performance?)
+            index_bam(path,n_threads=min(16,n_threads))
 
     return bam_paths_per_sample
 
@@ -89,6 +90,10 @@ def run_hapslap(
         min_coverage,
         max_path_to_read_cost,
         parameter_size_cutoff):
+
+    for path in [tsv_path,ref_path,interval_bed_path]:
+        if not os.path.exists(path):
+            raise Exception("ERROR: File not found: " + path)
 
     bams_per_sample = localize_bams_per_sample(
         cache_directory,
@@ -131,6 +136,8 @@ def run_hapslap(
         n_threads=n_threads,
         parameter_size_cutoff=parameter_size_cutoff
     )
+
+    return
 
 
 def parse_comma_separated_string(s):
