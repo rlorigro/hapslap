@@ -413,6 +413,9 @@ def get_all_relevant_chromosome_names(test_dirs):
         print("Evaluating: " + test_dir)
         config_path = os.path.join(test_dir,"config.json")
 
+        if not os.path.exists(config_path):
+            continue
+
         config = None
         with open(config_path, 'r') as file:
             config = json.load(file)
