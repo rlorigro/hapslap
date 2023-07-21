@@ -44,7 +44,8 @@ def get_region_from_bam(output_directory, bam_path, region_string, tokenator, ti
     # been downloaded on the machine previously (since last clearing of the /tmp/ dir)
 
     # Replace all non-alphanumeric chars in the path with a '_'
-    name = re.sub('[^0-9a-zA-Z]+', '_', bam_path)
+    name = bam_path
+    name = re.sub('[^0-9a-zA-Z]+', '_', name)
     temp_working_dir = os.path.join("/tmp", name)
 
     if not os.path.exists(temp_working_dir):
@@ -151,6 +152,9 @@ def download_regions_of_bam(regions, tsv_path, column_names, output_directory, n
                 os.makedirs(output_subdirectory)
 
             filename = sample_name + "_" + column_name + "_" + file_tag + ".bam"
+
+            print(gs_uri)
+
             args.append([output_subdirectory,gs_uri,region_string,token,600,filename])
             result_samples.append(sample_name)
 
