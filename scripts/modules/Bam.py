@@ -2,6 +2,7 @@ from .Authenticator import GoogleToken
 import pandas
 
 from multiprocessing import Pool
+from copy import copy
 import subprocess
 import hashlib
 import sys
@@ -47,7 +48,7 @@ def get_region_from_bam(output_directory, bam_path, region_string, tokenator, ti
     print(bam_path)
 
     # Replace all non-alphanumeric chars in the path with a '_'
-    name = bam_path
+    name = copy(bam_path)
     name = re.sub('[^0-9a-zA-Z]+', '_', name)
     temp_working_dir = os.path.join("/tmp", name)
 
@@ -55,7 +56,8 @@ def get_region_from_bam(output_directory, bam_path, region_string, tokenator, ti
         os.makedirs(temp_working_dir)
 
     if output_filename is None:
-        prefix = os.path.basename(bam_path).split('.')[0]
+        prefix = copy(bam_path)
+        prefix = os.path.basename(prefix).split('.')[0]
         output_filename = prefix + "_" + region_string.replace(":","_") + ".bam"
 
     local_bam_path = os.path.join(output_directory, output_filename)
