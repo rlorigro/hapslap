@@ -118,12 +118,54 @@ def main(input_dir):
     mean_time_total = mean(y)
     mode_time_total = mode(y)
 
-    print("Total samples:", len(y))
-    print("Average time:", mean_time_total)
-    print("Median time:", median_time_total)
-    print("Mode time:", mode_time_total)
+    summary_string = \
+        "Total samples: " + str(len(y)) + '\n' + \
+        "Average time: %.1f" % (mean_time_total) + '\n' + \
+        "Median time: " + str(median_time_total) + '\n' \
 
-    pyplot.savefig("run_time.png",dpi=200)
+    fig.text(0.85, 0.85, summary_string)
+
+    pyplot.savefig("optimizer_run_time.png",dpi=200)
+
+    pyplot.show()
+    pyplot.close()
+
+    fig = pyplot.figure()
+    avg_minimap_time = mean(time_elapsed_minimap_s)
+    avg_minigraph_time = mean(time_elapsed_minigraph_s)
+    avg_optimizer_time = mean(time_elapsed_optimizer_s)
+    avg_other_time = mean(time_elapsed_other_s)
+
+    labels = [
+        "minimap",
+        "minigraph",
+        "optimizer",
+        "other"
+    ]
+
+    data = [
+        avg_minimap_time,
+        avg_minigraph_time,
+        avg_optimizer_time,
+        avg_other_time
+    ]
+
+    pyplot.pie(data, labels=labels)
+
+    y = time_elapsed_total_s
+
+    median_time_total = median(y)
+    mean_time_total = mean(y)
+    mode_time_total = mode(y)
+
+    summary_string = \
+        "Total samples:" + str(len(y)) + '\n' + \
+        "Average time: %.2f" % (mean_time_total) + '\n' + \
+        "Median time:" + str(median_time_total) + '\n' \
+
+    fig.text(0.4, 0.02, summary_string)
+
+    pyplot.savefig("run_time_composition.png",dpi=200)
 
     pyplot.show()
     pyplot.close()
