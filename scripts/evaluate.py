@@ -493,7 +493,8 @@ def evaluate_test_haplotypes(
             n_threads=n_threads
         )
 
-        if results is None:
+        n_results = len([x for x in results if x is not None])
+        if n_results == 0:
             print("Skipping because no haplotypes found in truthset")
             continue
 
