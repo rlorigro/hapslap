@@ -494,6 +494,7 @@ def evaluate_test_haplotypes(
         )
 
         if results is None:
+            print("Skipping because no haplotypes found in truthset")
             continue
 
         ref_sequences = {x.name:x for x in results if x is not None}
