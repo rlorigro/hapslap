@@ -44,16 +44,10 @@ def get_region_from_bam(output_directory, bam_path, region_string, tokenator, ti
     # not matter. This also means that future fetch operations can correctly locate and reuse the index if it has
     # been downloaded on the machine previously (since last clearing of the /tmp/ dir)
 
-    print("B")
-    print(bam_path)
-
     # Replace all non-alphanumeric chars in the path with a '_'
     name = copy(bam_path)
     name = re.sub('[^0-9a-zA-Z]+', '_', name)
     temp_working_dir = os.path.join("/tmp", name)
-
-    print("C")
-    print(bam_path)
 
     if not os.path.exists(temp_working_dir):
         os.makedirs(temp_working_dir)
@@ -62,9 +56,6 @@ def get_region_from_bam(output_directory, bam_path, region_string, tokenator, ti
         prefix = copy(bam_path)
         prefix = os.path.basename(prefix).split('.')[0]
         output_filename = prefix + "_" + region_string.replace(":","_") + ".bam"
-
-    print("D")
-    print(bam_path)
 
     local_bam_path = os.path.join(output_directory, output_filename)
     index_path = bam_path + ".bai"
@@ -75,9 +66,6 @@ def get_region_from_bam(output_directory, bam_path, region_string, tokenator, ti
         return local_bam_path
 
     tokenator.update_environment()
-
-    print("E")
-    print(bam_path)
 
     args = [
         "samtools",
@@ -166,9 +154,6 @@ def download_regions_of_bam(regions, tsv_path, column_names, output_directory, n
                 os.makedirs(output_subdirectory)
 
             filename = sample_name + "_" + column_name + "_" + file_tag + ".bam"
-
-            print("A")
-            print(gs_uri)
 
             args.append([output_subdirectory,gs_uri,region_string,token,600,filename])
             result_samples.append(sample_name)
