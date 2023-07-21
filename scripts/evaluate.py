@@ -410,7 +410,6 @@ def get_all_relevant_chromosome_names(test_dirs):
     names = set()
 
     for test_dir in test_dirs:
-        print("Evaluating: " + test_dir)
         config_path = os.path.join(test_dir,"config.json")
 
         if not os.path.exists(config_path):
@@ -419,8 +418,6 @@ def get_all_relevant_chromosome_names(test_dirs):
         config = None
         with open(config_path, 'r') as file:
             config = json.load(file)
-
-        print(config)
 
         names.add(config["chromosome"])
 
@@ -440,6 +437,8 @@ def evaluate_test_haplotypes(
     test_dirs = [str(f) for f in Path(input_dir).iterdir() if f.is_dir()]
 
     chromosome_names = get_all_relevant_chromosome_names(test_dirs)
+
+    print("Downloading relevant chromosomes: " + str(chromosome_names))
 
     aligned_hap_directory = os.path.join(cache_dir, "aligned_haps")
     bam_paths = download_regions_of_bam(
