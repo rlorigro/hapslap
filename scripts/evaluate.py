@@ -464,9 +464,11 @@ def evaluate_test_haplotypes(
         all_haplotypes_path = os.path.join(test_dir, "all_paths.fasta")
 
         if not os.path.exists(config_path):
+            print("Skipping because no config_path found in directory")
             continue
 
         if not os.path.exists(test_path):
+            print("Skipping because no test_path found in directory")
             continue
 
         config = None
