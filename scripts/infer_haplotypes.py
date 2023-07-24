@@ -392,15 +392,6 @@ class Variables:
             passing_samples.add(sample_id)
             paths_covered_per_sample[sample_id].add(path_id)
 
-        obligatory_paths = set()
-        for sample,paths in paths_covered_per_sample.items():
-            if len(paths) == 1:
-                obligatory_paths.union(paths)
-
-        if len(obligatory_paths) > 1:
-            raise Exception("n <= %d infeasible for model because %d samples have non-overlapping "
-                            "obligatory paths (no other choices). Paths are: %s" % (len(obligatory_paths), len(obligatory_paths), str(obligatory_paths)))
-
         all_pass = True
         for id,sample in sample_id_map:
             if id not in passing_samples:
@@ -467,25 +458,17 @@ class Variables:
         return
 
 
-def optimize_with_cpsat(
-        path_to_read_costs,
-        reads: IncrementalIdMap,
-        samples: IncrementalIdMap,
-        paths: Paths,
-        sample_to_reads: dict,
-        output_dir: str,
-        n_threads: int = 1):
-
-    output_subdir = os.path.join(output_dir, "optimizer")
-
-    vars = Variables()
-
-    model = cp_model.CpModel()
+def construct_base_model(
+        vars,
+        model,
+        reads,
+        paths,
+        sample_to_reads,
+        path_to_read_costs):
 
     # Define read assignment variables
     for edge in path_to_read_costs.keys():
         # 'edge' is a tuple with path_id,read_id
-        # vars.path_to_read[edge] = model.NewIntVar(0, 1, "p%dr%d" % edge)
         vars.path_to_read[edge] = model.NewBoolVar("p%dr%d" % edge)
 
     # Constraint: each read must map to only one haplotype/path
@@ -524,6 +507,32 @@ def optimize_with_cpsat(
     # Now that the boolean indicators have been defined, use them to add a constraint on ploidy per sample
     for sample_id,read_group in sample_to_reads.items():
         model.Add(sum([vars.path_to_sample[(path_id,sample_id)] for path_id in paths.ids()]) <= 2)
+
+    return vars, model
+
+
+def optimize_with_cpsat(
+        path_to_read_costs,
+        reads: IncrementalIdMap,
+        samples: IncrementalIdMap,
+        paths: Paths,
+        sample_to_reads: dict,
+        output_dir: str,
+        n_threads: int = 1):
+
+    output_subdir = os.path.join(output_dir, "optimizer")
+
+    vars = Variables()
+    model = cp_model.CpModel()
+
+    vars, model = construct_base_model(
+        vars=vars,
+        model=model,
+        reads=reads,
+        paths=paths,
+        sample_to_reads=sample_to_reads,
+        path_to_read_costs=path_to_read_costs
+    )
 
     # Add boolean indicators which imply that a path has been used (assigned any read)
     for path_id in paths.ids():
@@ -589,6 +598,7 @@ def optimize_with_cpsat(
         print("----")
         print(solver.SolutionInfo())
         print(solver.ResponseStats())
+        sys.stdout.flush()
 
         if status == cp_model.FEASIBLE or status == cp_model.OPTIMAL:
             results[i] = vars.get_cache(status=status, solver=solver)
@@ -934,6 +944,87 @@ def filter_costs(path_to_read_costs, read_id_map, read_to_sample, max_path_to_re
             del path_to_read_costs[e]
 
     return path_to_read_costs
+
+
+def get_multiobjective_best_solution(results, n_stop, region_string, output_directory):
+    if len(results) == 0:
+        sys.stderr.write("WARNING: Region failed due to infeasibility of optimization: %s\n" % region_string)
+        return "Region failed due to infeasibility of optimization\n"
+
+    # TODO: replace this with average error rate per read?
+    c_target = 0
+
+    # TODO: replace this with regional heterozygosity estimate
+    n_target = 0
+
+    histogram_path = os.path.join(output_directory, "path_global_score_histogram.png")
+
+    pyplot.savefig(histogram_path, dpi=200)
+    pyplot.close('all')
+
+    fig,axes = pyplot.subplots(nrows=1, ncols=1)
+
+    c_start = sys.maxsize
+    c_stop = 0
+    n_start = 1
+    # n_stop = len(data_per_sample.keys())
+
+    for n,cache in results.items():
+        if cache.cost_a < c_start:
+            c_start = cache.cost_a
+
+        if cache.cost_a > c_stop:
+            c_stop = cache.cost_a
+
+    print("----")
+    print("n",n_start,n_stop)
+    print("c",c_start,c_stop)
+    print()
+
+    d_min = sys.maxsize
+    c_min = None
+    n_min = None
+    c_per_read_min = None
+    n_norm_min = None
+    c_norm_min = None
+
+    for n,cache in results.items():
+        # Normalize the range of outputs for n and c if a range exists
+        # A constant of 1 is added to make the c_norm more impactful on total distance from utopia point
+        if c_stop == c_start:
+            c_norm = c_start
+        else:
+            c_norm = float(cache.cost_a - c_start) / float(c_stop - c_start) + 1
+
+        if n_stop == n_start:
+            n_norm = n_start
+        else:
+            n_norm = (float(n) - n_start) / float(n_stop - n_start) + 0.001
+
+        distance = math.sqrt((c_norm-c_target)**2 + (n_norm-n_target)**2)
+        if distance < d_min:
+            d_min = distance
+            n_min = n
+            c_min = cache.cost_a
+
+            # For plotting
+            n_norm_min = n_norm
+            c_norm_min = c_norm
+
+        axes.scatter(n_norm, c_norm, color="C0")
+        axes.plot([n_target,n_norm], [c_target,c_norm], color="gray")
+        axes.text(n_norm, c_norm, "%.4f" % distance)
+
+    best_result = results[n_min]
+
+    axes.plot(n_norm_min, c_norm_min, color="C1", marker='o', markerfacecolor='none', markersize=6)
+    axes.text(n_norm_min, c_norm_min, "n=%d" % n_min, color="red", ha='right', va='top')
+
+    axes.set_title("Results for %s" % region_string)
+    axes.set_xlabel("n_norm")
+    axes.set_ylabel("c_norm")
+
+    return n_min, best_result
 
 
 def infer_haplotypes(
@@ -1339,7 +1430,15 @@ def infer_haplotypes(
         for read in reads:
             read_to_sample[read] = sample
 
-    filter_costs(path_to_read_costs, read_id_map, read_to_sample, max_path_to_read_cost)
+    # TODO: do a better job of addressing situations where there is no diploid infeasibility, but all reads of a sample
+    # are removed as a result of bad read-to-graph alignment. As an SV merger it is fair to exclude those samples
+    # but should they be caught somehow and reported as empty?
+    filter_costs(
+        path_to_read_costs=path_to_read_costs,
+        read_id_map=read_id_map,
+        read_to_sample=read_to_sample,
+        max_path_to_read_cost=max_path_to_read_cost
+    )
 
     if len(path_to_read_costs) > parameter_size_cutoff:
         print("WARNING: skipping very large optimization problem: " + str(region_string))
@@ -1365,6 +1464,7 @@ def infer_haplotypes(
 
     a = time.time()
 
+    # If optimizing for multiple objectives, gather the pareto solutions first (all n values)
     results = optimize_with_cpsat(
         path_to_read_costs=path_to_read_costs,
         reads=read_id_map,
@@ -1375,96 +1475,27 @@ def infer_haplotypes(
         output_dir=output_directory
     )
 
-    if len(results) == 0:
-        sys.stderr.write("WARNING: Region failed due to infeasibility of optimization: %s\n" % region_string)
-        return "Region failed due to infeasibility of optimization\n"
-
     b = time.time()
     time_elapsed_optimizer = b - a
 
-    # TODO: replace this with average error rate per read?
-    c_target = 0
-
-    # TODO: replace this with regional heterozygosity estimate
-    n_target = 0
-
-    histogram_path = os.path.join(output_directory, "path_global_score_histogram.png")
-
-    pyplot.savefig(histogram_path, dpi=200)
-    pyplot.close('all')
-
-    fig,axes = pyplot.subplots(nrows=1, ncols=1)
-
-    c_start = sys.maxsize
-    c_stop = 0
-    n_start = 1
-    n_stop = len(data_per_sample.keys())
-
-    for n,cache in results.items():
-        if cache.cost_a < c_start:
-            c_start = cache.cost_a
-
-        if cache.cost_a > c_stop:
-            c_stop = cache.cost_a
-
-    print("----")
-    print("n=1 min cost:",min_path_edit_distance)
-    print("n",n_start,n_stop)
-    print("c",c_start,c_stop)
-    print()
-
-    d_min = sys.maxsize
-    c_min = None
-    n_min = None
-    c_per_read_min = None
-    n_norm_min = None
-    c_norm_min = None
-
-    for n,cache in results.items():
-        # Normalize the range of outputs for n and c if a range exists
-        # A constant of 1 is added to make the c_norm more impactful on total distance from utopia point
-        if c_stop == c_start:
-            c_norm = c_start
-        else:
-            c_norm = float(cache.cost_a - c_start) / float(c_stop - c_start) + 1
-
-        if n_stop == n_start:
-            n_norm = n_start
-        else:
-            n_norm = (float(n) - n_start) / float(n_stop - n_start) + 0.001
-
-        distance = math.sqrt((c_norm-c_target)**2 + (n_norm-n_target)**2)
-        if distance < d_min:
-            d_min = distance
-            n_min = n
-            c_per_read_min = float(cache.cost_a)/float(len(read_id_map))
-            c_min = cache.cost_a
-
-            # For plotting
-            n_norm_min = n_norm
-            c_norm_min = c_norm
-
-        axes.scatter(n_norm, c_norm, color="C0")
-        axes.plot([n_target,n_norm], [c_target,c_norm], color="gray")
-        axes.text(n_norm, c_norm, "%.4f" % distance)
-
-    best_result = results[n_min]
-
-    axes.plot(n_norm_min, c_norm_min, color="C1", marker='o', markerfacecolor='none', markersize=6)
-    axes.text(n_norm_min, c_norm_min, "n=%d" % n_min, color="red", ha='right', va='top')
-
-    axes.set_title("Results for %s" % region_string)
-    axes.set_xlabel("n_norm")
-    axes.set_ylabel("c_norm")
-
     # Before writing the final output alleles, trim the flanking sequence (to make evaluation simpler)
     trim_flanks_from_ref_alleles(alleles, flank_length)
+
+    n_stop = len(data_per_sample.keys())
+
+    # Find best compromise among pareto solutions
+    n_min, solution = get_multiobjective_best_solution(
+        results=results,
+        n_stop=n_stop,
+        region_string=region_string,
+        output_directory=output_directory
+    )
 
     counter = defaultdict(int)
 
     assigned_haplotypes_path = os.path.join(output_directory, "assigned_haplotypes.fasta")
     with open(assigned_haplotypes_path, 'w') as file:
-        for [path_id,sample_id],value in best_result.path_to_sample.items():
+        for [path_id,sample_id],value in solution.path_to_sample.items():
             # Only consider combinations of path/sample that were actually assigned by the optimizer
             if value == 0:
                 continue
@@ -1486,7 +1517,7 @@ def infer_haplotypes(
 
     genotype_support_output_path = os.path.join(output_directory, "genotype_support.csv")
 
-    results[n_min].write_genotype_support_to_file(
+    solution.write_genotype_support_to_file(
         output_path=genotype_support_output_path,
         paths=paths,
         sample_id_to_read_ids=sample_id_to_read_ids,
@@ -1496,15 +1527,15 @@ def infer_haplotypes(
     time_stop = time.time()
     time_elapsed_total = time_stop - time_start
 
-    summary_string = "n,%d\n" % n_min + \
-                     "n_candidates,%d\n" % c_per_read_min + \
-                     "n_spanning_reads,%d\n" % len(spanning_reads) + \
-                     "cost_per_read,%.2f\n" % d_min + \
-                     "distance,%.4f\n" % len(paths) + \
-                     "time_elapsed_minigraph_s,%d\n" % time_elapsed_minigraph + \
-                     "time_elapsed_minimap_s,%d\n" % time_elapsed_minimap + \
-                     "time_elapsed_optimizer_s,%d\n" % time_elapsed_optimizer + \
-                     "time_elapsed_total_s,%d\n" % time_elapsed_total
+    summary_string = \
+        "n,%d\n" % n_min + \
+        "c,%d\n" % solution.cost_a + \
+        "n_candidates,%d\n" % len(paths) + \
+        "n_spanning_reads,%d\n" % len(spanning_reads) + \
+        "time_elapsed_minigraph_s,%d\n" % time_elapsed_minigraph + \
+        "time_elapsed_minimap_s,%d\n" % time_elapsed_minimap + \
+        "time_elapsed_optimizer_s,%d\n" % time_elapsed_optimizer + \
+        "time_elapsed_total_s,%d\n" % time_elapsed_total
 
     sys.stderr.write(summary_string)
     sys.stderr.write('\n')
