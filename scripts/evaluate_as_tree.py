@@ -20,15 +20,15 @@ import sys
 import os
 import re
 
-from networkx.drawing.nx_pydot import graphviz_layout
+from networkx.drawing.nx_agraph import graphviz_layout
 from matplotlib import pyplot,colors
 from pywfa import WavefrontAligner
+import pygraphviz
 import matplotlib
 import networkx
 import pandas
-import pydot
 
-# matplotlib.use('Agg')
+matplotlib.use('Agg')
 
 
 def truncate_colormap(cmap, minval=0.0, maxval=1.0, n=100):
@@ -354,11 +354,11 @@ def get_all_relevant_chromosome_names(test_dirs):
     return names
 
 
-def construct_graph_from_alignments(pairs, lengths, results, id_map, graph, distance_threshold):
-    for i in range(len(results)):
+def construct_graph_from_alignments(pairs, lengths, distances, id_map, graph, distance_threshold):
+    for i in range(len(distances)):
         a,b = pairs[i]
         l_a,l_b = lengths[i]
-        d = results[i]
+        d = distances[i]
 
         w = 0
         if l_a + l_b > 0:
@@ -380,15 +380,33 @@ def construct_graph_from_alignments(pairs, lengths, results, id_map, graph, dist
     return graph
 
 
+def get_min_distance_per_sample(pairs, distances):
+    # Accumulate all the minimum observed distances between ref samples and test samples
+    min_distances = defaultdict(lambda: sys.maxsize)
+    for i in range(len(pairs)):
+        a, b = pairs[i]
+        ref_sample = a.name
+
+        d = distances[i]
+
+        d_min = min_distances[ref_sample]
+
+        if d < d_min:
+            min_distances[ref_sample] = d
+
+    return min_distances
+
+
 def evaluate_test_haplotypes(
         input_dir,
         cache_dir,
         output_dir,
         n_threads,
-        distance_threshold,
         tsv_path,
         column_names
         ):
+
+    distance_threshold = sys.maxsize
 
     test_dirs = [str(f) for f in Path(input_dir).iterdir() if f.is_dir()]
 
@@ -437,8 +455,13 @@ def evaluate_test_haplotypes(
         stop = config["ref_stop"]
 
         prefix = chromosome + "_" + str(start) + "-" + str(stop)
+        # output_subdirectory = os.path.join(output_dir, prefix)
+        # if not os.path.exists(output_subdirectory):
+        #     os.makedirs(output_subdirectory)
 
         id_map = IncrementalIdMap()
+
+        sys.stderr.write("Extracting ref haps...\n")
 
         results = get_haplotypes_of_region(
             bam_paths=bam_paths,
@@ -453,33 +476,50 @@ def evaluate_test_haplotypes(
             print("Skipping because no haplotypes found in truthset")
             continue
 
+        input_sequences = dict()
+        for item in iterate_fasta(all_haplotypes_path, normalize_name=False):
+            item.sequence = item.sequence[flank_length:len(item.sequence) - flank_length]
+            input_sequences[item.name] = item
+
         ref_sequences = {x.name:x for x in results if x is not None}
         test_sequences = {x.name:x for x in iterate_fasta(test_path)}
 
-        feasible_samples = evaluate_upper_bound(
-            ref_sequences=ref_sequences,
-            haplotype_fasta_path=all_haplotypes_path,
-            output_dir=output_dir,
-            prefix=prefix,
-            flank_size=flank_length,
-            distance_threshold=distance_threshold,
-            n_threads=n_threads)
+
+        print("before pruning sequences: " + str(len(test_sequences)))
+        # Remove duplicate sequences from test_sequences
+        visited_sequences = set()
+        to_be_deleted = set()
+        for seq in test_sequences.values():
+            if seq.sequence not in visited_sequences:
+                visited_sequences.add(seq.sequence)
+            else:
+                to_be_deleted.add(seq.name)
+
+        for name in to_be_deleted:
+            del test_sequences[name]
+
+        print("after pruning sequences: " + str(len(test_sequences)))
 
         for key in sorted(list(ref_sequences.keys()) + list(test_sequences.keys())):
             id_map.add(key)
 
         # Align ref sequences to themselves (to build a tree)
-        pairs,lengths,results = cross_align_sequences(ref_sequences, n_threads)
+        sys.stderr.write("Cross aligning ref haps...\n")
+        pairs,lengths,distances = cross_align_sequences(ref_sequences, n_threads)
 
+        sys.stderr.write("Constructing all-vs-all graph...\n")
         ref_graph = networkx.Graph()
-        ref_graph = construct_graph_from_alignments(pairs, lengths, results, id_map, ref_graph, distance_threshold)
+        ref_graph = construct_graph_from_alignments(pairs, lengths, distances, id_map, ref_graph, distance_threshold)
 
         ref_graph_cache = ref_graph.copy()
         edges = list(ref_graph_cache.edges(data=True))
 
         edges_by_weight = defaultdict(list)
         for x in edges:
-            edges_by_weight[x[2]["weight"]].append((x[0],x[1]))
+            w = x[2]["weight"]
+            a = x[0]
+            b = x[1]
+            edges_by_weight[w].append((a,b))
 
         del edges
 
@@ -489,12 +529,16 @@ def evaluate_test_haplotypes(
         distances = list()
 
         # Initialize the root component with all nodes
-        component_series = [[{x for x in ref_graph.nodes}]]
+        root_component = {x for x in ref_graph.nodes}
+        root_samples = {id_map.get_name(x) for x in ref_graph.nodes}
+        component_series = [[root_component]]
         prev_component_map = {x:0 for x in ref_graph.nodes}
         root_name = str(0) + "_" + str(0)
         id = tree_id_map.add(root_name)
-        tree.add_node(id, sample='')
+        tree.add_node(id, label='', samples=root_samples, distance=sys.maxsize, tier=0, size=len(ref_graph.nodes))
+        last_tier = 0
 
+        sys.stderr.write("Constructing ref tree...\n")
         for distance,edges in sorted(edges_by_weight.items(), key=lambda x: x[0], reverse=True):
             affected_components = set()
             for a,b in edges:
@@ -508,21 +552,21 @@ def evaluate_test_haplotypes(
 
             # IF this is the first component set, or if this component set is different from the last
             if len(components) != len(component_series[-1]):
-                print(distance, len(components))
                 distances.append(distance)
 
                 tier = len(component_series)
+                last_tier = tier
 
                 for c,nodes in enumerate(components):
                     name = str(tier) + "_" + str(c)
-                    print(name)
 
-                    sample = ""
+                    label = ""
                     if len(nodes) == 1:
-                        sample = id_map.get_name(next(iter(nodes)))
+                        label = id_map.get_name(next(iter(nodes)))
 
                     id = tree_id_map.add(name)
-                    tree.add_node(id, sample=sample)
+                    samples = {id_map.get_name(x) for x in nodes}
+                    tree.add_node(id, label=label, samples=samples, distance=distance, tier=tier, size=len(nodes))
 
                     for n in nodes:
                         component_map[n] = c
@@ -531,8 +575,6 @@ def evaluate_test_haplotypes(
                         name = str(tier) + "_" + str(c)
                         name_prev = str(tier-1) + "_" + str(c_prev)
 
-                        print("new edge", name, name_prev)
-
                         a = tree_id_map.get_id(name)
                         b = tree_id_map.get_id(name_prev)
                         tree.add_edge(a,b)
@@ -540,21 +582,125 @@ def evaluate_test_haplotypes(
                 component_series.append(components)
                 prev_component_map = component_map
 
+        sys.stderr.write("Aligning test haps to ref haps...\n")
+        # Align test_sequences to the refs (to tag nodes in the tree)
+        test_pairs,test_lengths,test_distances = align_sequences_to_other_sequences(ref_sequences, test_sequences, n_threads)
+
+        # Align all input sequences to the refs (to tag nodes in the tree)
+        input_pairs,input_lengths,input_distances = align_sequences_to_other_sequences(ref_sequences, input_sequences, n_threads)
+
+        sys.stderr.write("Annotating tree...\n")
+
+        ref_to_test_min_distances = get_min_distance_per_sample(test_pairs, test_distances)
+        ref_to_input_min_distances = get_min_distance_per_sample(input_pairs, input_distances)
+
         pos = graphviz_layout(tree, prog="dot")
 
-        # pos = networkx.spring_layout(tree, weight='weight', iterations=50)
+        fig = pyplot.figure()
+        axes = pyplot.axes()
+
+        x_min = sys.maxsize
+        y_min = sys.maxsize
+        x_max = -sys.maxsize
+        y_max = -sys.maxsize
+        tier_data = defaultdict(dict)
+        for n,[x,y] in pos.items():
+            tier = tree.nodes[n]["tier"]
+            distance = tree.nodes[n]["distance"]
+            tier_data[tier]["y"] = y
+            tier_data[tier]["d"] = distance
+
+            if x < x_min:
+                x_min = x
+
+            if x > x_max:
+                x_max = x
+
+            if y < y_min:
+                y_min = y
+
+            if y > y_max:
+                y_max = y
+
+        x_width = x_max - x_min
+        y_width = y_max - y_min
+        x_margin = x_min - 0.05 * x_width
+        y_margin = y_min - 0.06 * y_width
 
         labels = dict()
+        sizes = list()
+        colors = list()
         for n,[id,values] in enumerate(tree.nodes(data=True)):
-            labels[n] = (values["sample"])
+            tier = int(tree_id_map.get_name(id).split("_")[0])
 
-        networkx.draw(tree,pos, alpha=0.6, node_size=20, labels=labels)
+            if tier != last_tier:
+                labels[n] = ""
+            else:
+                labels[n] = (values["label"])
 
-        # # Align test_sequences to the refs (to tag nodes in the tree)
-        # test_pairs,test_lengths,test_results = align_sequences_to_other_sequences(ref_sequences, test_sequences, n_threads)
-        #
+            s = values["size"]*8
+            sizes.append(s)
 
-        pyplot.show()
+            distance = values["distance"]
+            samples = values["samples"]
+
+            covered_by_test = False
+            covered_by_input = False
+            d_min = sys.maxsize
+            for sample in samples:
+                d_test = ref_to_test_min_distances[sample]
+                d_input = ref_to_input_min_distances[sample]
+
+                if d_test <= distance:
+                    covered_by_test = True
+
+                if d_input <= distance:
+                    covered_by_input = True
+
+                if d_test < d_min:
+                    d_min = d_test
+
+            false_negative = covered_by_input and not covered_by_test
+            false_positive = not covered_by_input and covered_by_test
+            true_negative = not covered_by_input and not covered_by_test
+            true_positive = covered_by_input and covered_by_test
+
+            if false_negative:
+                colors.append("red")
+            if false_positive:
+                colors.append("orange")
+            if true_negative:
+                colors.append("gray")
+            if true_positive:
+                colors.append("C0")
+
+            if tier == last_tier:
+                axes.text(pos[n][0], pos[n][1], str(d_min) + ' ', fontsize=7, ha="center", va="top", rotation=90)
+                axes.text(pos[n][0], y_margin, labels[n], fontsize=7, ha="center", va="top", rotation=90)
+
+        sys.stderr.write("Computing layout and plotting...\n")
+
+        for t,data in tier_data.items():
+            y = data["y"]
+            d = data["d"]
+
+            s = str(d)
+            if d == sys.maxsize:
+                s = "inf"
+
+            axes.text(x_margin, y, s)
+            axes.axhline(y, linestyle="--",linewidth=0.5)
+
+        networkx.draw(tree,pos, alpha=0.6, node_size=sizes, node_color=colors)
+
+        axes.set_title("Ref clusters represented by test haplotypes")
+        fig.tight_layout()
+
+        figure_output_path = os.path.join(output_dir, prefix + "_tree.png")
+        fig.set_size_inches(12,6)
+        pyplot.savefig(figure_output_path, dpi=200)
+
+        # pyplot.show()
         pyplot.close()
 
     return
@@ -565,18 +711,13 @@ def main(
         cache_dir,
         output_dir,
         n_threads,
-        distance_threshold,
         tsv_path,
         column_names,
 ):
 
-    # n_threads = 30
-    # distance_threshold = 25
-    #
     # output_dir = "/home/ryan/data/test_hapslap/evaluation/test_breakend/"
     # tsv_path = "/home/ryan/data/test_hapslap/terra/hprc_sandbox/subsample.tsv"
     # column_names = ["bam_hap1_vs_chm13","bam_hap2_vs_chm13"]
-    #
     # input_directory = Path("/home/ryan/data/test_hapslap/results_breakend/")
 
     evaluate_test_haplotypes(
@@ -584,12 +725,9 @@ def main(
         cache_dir=cache_dir,
         output_dir=output_dir,
         n_threads=n_threads,
-        distance_threshold=distance_threshold,
         tsv_path=tsv_path,
         column_names=column_names,
     )
-
-    # write_formatted_alignments_per_sample()
 
 
 def parse_comma_separated_string(s):
@@ -628,14 +766,6 @@ if __name__ == "__main__":
         help="Number of threads to use"
     )
 
-    parser.add_argument(
-        "-d","--distance_threshold",
-        required=False,
-        default=25,
-        type=int,
-        help="Default clustering threshold for distance between haplotypes"
-    )
-
     # TODO: refactor
     parser.add_argument(
         "--tsv",
@@ -659,7 +789,6 @@ if __name__ == "__main__":
         cache_dir=args.cache_dir,
         output_dir=args.output_dir,
         n_threads=args.threads,
-        distance_threshold=args.distance_threshold,
         tsv_path=args.tsv,
         column_names=args.column_names
     )
