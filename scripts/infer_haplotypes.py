@@ -277,14 +277,15 @@ class Variables:
         # key = path_id
         self.path = dict()
 
+        # Used for marginalization/iteration over n (to be deprecated)
         # key = integer of n >= 1
         self.n = dict()
 
         # Objective a, explicitly minimized
-        self.cost_a = None
+        self.cost_d = None
 
         # Objective b, marginalized
-        self.cost_b = None
+        self.cost_n = None
 
         # Return code of optimization
         self.status = None
@@ -303,8 +304,8 @@ class Variables:
 
         if not (status == cp_model.OPTIMAL or status == cp_model.FEASIBLE):
             sys.stderr.write("WARNING: non-optimal result from solver")
-            cache.cost_a = None
-            cache.cost_b = None
+            cache.cost_d = None
+            cache.cost_n = None
 
         else:
             for key in self.path_to_read:
@@ -319,8 +320,8 @@ class Variables:
             for key in self.n:
                 cache.n[key] = solver.Value(self.n[key])
 
-            cache.cost_a = solver.Value(self.cost_a)
-            cache.cost_b = solver.Value(self.cost_b)
+            cache.cost_d = solver.Value(self.cost_d) if self.cost_d is not None else 0
+            cache.cost_n = solver.Value(self.cost_n) if self.cost_n is not None else 0
 
         cache.response_stats = solver.ResponseStats()
         cache.status = status
@@ -511,7 +512,7 @@ def construct_base_model(
     return vars, model
 
 
-def optimize_with_cpsat(
+def find_all_pareto_solutions(
         path_to_read_costs,
         reads: IncrementalIdMap,
         samples: IncrementalIdMap,
@@ -550,12 +551,12 @@ def optimize_with_cpsat(
         model.Add(s == 0).OnlyEnforceIf(vars.path[path_id].Not())
 
     # Cost term a: sum of edit distances for all reads assigned to haplotypes
-    vars.cost_a = model.NewIntVar(0, 100_000_000, "cost_a")
-    model.Add(vars.cost_a == sum([c*vars.path_to_read[e] for e,c in path_to_read_costs.items()]))
+    vars.cost_d = model.NewIntVar(0, 100_000_000, "cost_d")
+    model.Add(vars.cost_d == sum([c * vars.path_to_read[e] for e,c in path_to_read_costs.items()]))
 
     # Cost term b: sum of unique haplotypes used
-    vars.cost_b = model.NewIntVar(0, 100_000_000, "cost_b")
-    model.Add(vars.cost_b == sum([x for x in vars.path.values()]))
+    vars.cost_n = model.NewIntVar(0, 100_000_000, "cost_n")
+    model.Add(vars.cost_n == sum([x for x in vars.path.values()]))
 
     # n diploid samples can at most fill n*2 haplotypes
     # Sometimes there are may be fewer candidate paths than that
@@ -565,8 +566,8 @@ def optimize_with_cpsat(
 
     for i in range(1,max_feasible_haplotypes):
         vars.n[i] = model.NewBoolVar("n" + str(i))
-        model.Add(vars.cost_b == i).OnlyEnforceIf(vars.n[i])
-        model.Add(vars.cost_b != i).OnlyEnforceIf(vars.n[i].Not())
+        model.Add(vars.cost_n == i).OnlyEnforceIf(vars.n[i])
+        model.Add(vars.cost_n != i).OnlyEnforceIf(vars.n[i].Not())
 
     solver = cp_model.CpSolver()
     solver.parameters.num_search_workers = n_threads
@@ -583,7 +584,7 @@ def optimize_with_cpsat(
 
         model.ClearAssumptions()
         model.AddAssumption(vars.n[i])
-        model.Minimize(vars.cost_a)
+        model.Minimize(vars.cost_d)
 
         if status == cp_model.OPTIMAL:
             model.ClearHints()
@@ -606,17 +607,461 @@ def optimize_with_cpsat(
         o.cancel_timer_thread()
 
         if status == cp_model.FEASIBLE or status == cp_model.OPTIMAL:
-            if i_prev is not None and results[i].cost_a > results[i_prev].cost_a:
+            if i_prev is not None and results[i].cost_d > results[i_prev].cost_d:
                 sys.stderr.write("Iteration stopped at n=%d because score worsened\n" % i)
                 break
 
             i_prev = i
 
     for i,cache in results.items():
-        print("%d,%d" % (i, cache.cost_a))
+        print("%d,%d" % (i, cache.cost_d))
         cache.write_results_to_file(output_dir=os.path.join(output_subdir,str(i)))
 
     return results
+
+
+def find_all_pareto_solutions_2(
+        path_to_read_costs,
+        reads: IncrementalIdMap,
+        samples: IncrementalIdMap,
+        paths: Paths,
+        sample_to_reads: dict,
+        output_dir: str,
+        n_threads: int = 1):
+
+    output_subdir = os.path.join(output_dir, "optimizer")
+
+    # First optimize for unconstrained cost first, and fetch the corresponding n value
+    vars = Variables()
+    model = cp_model.CpModel()
+
+    vars, model = construct_base_model(
+        vars=vars,
+        model=model,
+        reads=reads,
+        paths=paths,
+        sample_to_reads=sample_to_reads,
+        path_to_read_costs=path_to_read_costs
+    )
+
+    # Add boolean indicators which imply that a path has been used (assigned any read)
+    for path_id in paths.ids():
+        vars.path[path_id] = model.NewBoolVar("p" + str(path_id))
+
+        # Accumulate all possible assignments of this path to any reads
+        v = [vars.path_to_read[(path_id,read_id)] for read_id in reads.ids() if (path_id,read_id) in path_to_read_costs]
+        s = sum(v)
+
+        if len(v) == 0:
+            print("WARNING: skipping path id %d because has no viable path assignments" % path_id)
+            continue
+
+        model.Add(s >= 1).OnlyEnforceIf(vars.path[path_id])
+        model.Add(s == 0).OnlyEnforceIf(vars.path[path_id].Not())
+
+    # Cost term a: sum of edit distances for all reads assigned to haplotypes
+    vars.cost_d = model.NewIntVar(0, 100_000_000, "cost_a")
+    model.Add(vars.cost_d == sum([c * vars.path_to_read[e] for e,c in path_to_read_costs.items()]))
+
+    # Cost term b: sum of unique haplotypes used
+    vars.cost_n = model.NewIntVar(0, 100_000_000, "cost_b")
+    model.Add(vars.cost_n == sum([x for x in vars.path.values()]))
+
+    # n diploid samples can at most fill n*2 haplotypes
+    # Sometimes there are may be fewer candidate paths than that
+    max_feasible_haplotypes = min(len(paths), len(sample_to_reads)*2) + 1
+
+    vars.validate(sample_id_to_read_ids=sample_to_reads, sample_id_map=samples, path_to_read_costs=path_to_read_costs)
+
+    for i in range(1,max_feasible_haplotypes):
+        vars.n[i] = model.NewBoolVar("n" + str(i))
+        model.Add(vars.cost_n == i).OnlyEnforceIf(vars.n[i])
+        model.Add(vars.cost_n != i).OnlyEnforceIf(vars.n[i].Not())
+
+    solver = cp_model.CpSolver()
+    solver.parameters.num_search_workers = n_threads
+    # solver.parameters.max_time_in_seconds = 300.0
+    # solver.parameters.log_search_progress = True
+    # solver.log_callback = print
+
+    status = None
+    results = dict()
+    i_prev = None
+
+    for i in range(1,max_feasible_haplotypes):
+        print(i)
+
+        model.ClearAssumptions()
+        model.AddAssumption(vars.n[i])
+        model.Minimize(vars.cost_d)
+
+        if status == cp_model.OPTIMAL:
+            model.ClearHints()
+            for var in vars.path_to_read.values():
+                model.AddHint(var, solver.Value(var))
+
+        # It's critical to STOP THE TIMER after this finishes because it relies on a thread which will run on
+        # past the solution for as long as the timer is set, potentially starving future iterations of threads.
+        o = ObjectiveEarlyStopping(60)
+        status = solver.SolveWithSolutionCallback(model, o)
+
+        print("----")
+        print(solver.SolutionInfo())
+        print(solver.ResponseStats())
+        sys.stdout.flush()
+
+        if status == cp_model.FEASIBLE or status == cp_model.OPTIMAL:
+            results[i] = vars.get_cache(status=status, solver=solver)
+
+        o.cancel_timer_thread()
+
+        if status == cp_model.FEASIBLE or status == cp_model.OPTIMAL:
+            if i_prev is not None and results[i].cost_d > results[i_prev].cost_d:
+                sys.stderr.write("Iteration stopped at n=%d because score worsened\n" % i)
+                break
+
+            i_prev = i
+
+    for i,cache in results.items():
+        print("%d,%d" % (i, cache.cost_d))
+        cache.write_results_to_file(output_dir=os.path.join(output_subdir,str(i)))
+
+    return results
+
+
+def optimize_n(
+        path_to_read_costs,
+        reads: IncrementalIdMap,
+        samples: IncrementalIdMap,
+        paths: Paths,
+        sample_to_reads: dict,
+        output_dir: str,
+        n_threads: int = 1):
+
+    output_subdir = os.path.join(output_dir, "optimizer")
+
+    # First optimize for unconstrained cost first, and fetch the corresponding n value
+    vars = Variables()
+    model = cp_model.CpModel()
+
+    vars, model = construct_base_model(
+        vars=vars,
+        model=model,
+        reads=reads,
+        paths=paths,
+        sample_to_reads=sample_to_reads,
+        path_to_read_costs=path_to_read_costs
+    )
+
+    # Add boolean indicators which imply that a path has been used (assigned any read)
+    for path_id in paths.ids():
+        vars.path[path_id] = model.NewBoolVar("p" + str(path_id))
+
+        # Accumulate all possible assignments of this path to any reads
+        v = [vars.path_to_read[(path_id,read_id)] for read_id in reads.ids() if (path_id,read_id) in path_to_read_costs]
+        s = sum(v)
+
+        if len(v) == 0:
+            print("WARNING: skipping path id %d because has no viable path assignments" % path_id)
+            continue
+
+        model.Add(s >= 1).OnlyEnforceIf(vars.path[path_id])
+        model.Add(s == 0).OnlyEnforceIf(vars.path[path_id].Not())
+
+    # Cost term n: sum of unique haplotypes used
+    vars.cost_n = model.NewIntVar(0, 100_000_000, "cost_b")
+    model.Add(vars.cost_n == sum([x for x in vars.path.values()]))
+
+    vars.validate(sample_id_to_read_ids=sample_to_reads, sample_id_map=samples, path_to_read_costs=path_to_read_costs)
+
+    solver = cp_model.CpSolver()
+    solver.parameters.num_search_workers = n_threads
+
+    status = None
+
+    model.Minimize(vars.cost_n)
+
+    # It's critical to STOP THE TIMER after this finishes because it relies on a thread which will run on
+    # past the solution for as long as the timer is set, potentially starving future iterations of threads.
+    o = ObjectiveEarlyStopping(60)
+    status = solver.SolveWithSolutionCallback(model, o)
+
+    print("----")
+    print(solver.SolutionInfo())
+    print(solver.ResponseStats())
+    sys.stdout.flush()
+
+    solution = None
+    if status == cp_model.FEASIBLE or status == cp_model.OPTIMAL:
+        solution = vars.get_cache(status=status, solver=solver)
+        solution.write_results_to_file(output_dir=os.path.join(output_subdir,"solution"))
+
+    o.cancel_timer_thread()
+
+    return solution
+
+
+def optimize_d(
+        path_to_read_costs,
+        reads: IncrementalIdMap,
+        samples: IncrementalIdMap,
+        paths: Paths,
+        sample_to_reads: dict,
+        output_dir: str,
+        n_threads: int = 1):
+
+    output_subdir = os.path.join(output_dir, "optimizer")
+
+    # First optimize for unconstrained cost first, and fetch the corresponding n value
+    vars = Variables()
+    model = cp_model.CpModel()
+
+    vars, model = construct_base_model(
+        vars=vars,
+        model=model,
+        reads=reads,
+        paths=paths,
+        sample_to_reads=sample_to_reads,
+        path_to_read_costs=path_to_read_costs
+    )
+
+    # Add boolean indicators which imply that a path has been used (assigned any read)
+    # for path_id in paths.ids():
+    #     vars.path[path_id] = model.NewBoolVar("p" + str(path_id))
+    #
+    #     # Accumulate all possible assignments of this path to any reads
+    #     v = [vars.path_to_read[(path_id,read_id)] for read_id in reads.ids() if (path_id,read_id) in path_to_read_costs]
+    #     s = sum(v)
+    #
+    #     if len(v) == 0:
+    #         print("WARNING: skipping path id %d because has no viable path assignments" % path_id)
+    #         continue
+    #
+    #     model.Add(s >= 1).OnlyEnforceIf(vars.path[path_id])
+    #     model.Add(s == 0).OnlyEnforceIf(vars.path[path_id].Not())
+
+    # Cost term d: sum of edit distances for all reads assigned to haplotypes
+    vars.cost_d = model.NewIntVar(0, 100_000_000, "cost_d")
+    model.Add(vars.cost_d == sum([c * vars.path_to_read[e] for e,c in path_to_read_costs.items()]))
+
+    vars.validate(sample_id_to_read_ids=sample_to_reads, sample_id_map=samples, path_to_read_costs=path_to_read_costs)
+
+    solver = cp_model.CpSolver()
+    solver.parameters.num_search_workers = n_threads
+
+    status = None
+
+    model.Minimize(vars.cost_d)
+
+    # It's critical to STOP THE TIMER after this finishes because it relies on a thread which will run on
+    # past the solution for as long as the timer is set, potentially starving future iterations of threads.
+    o = ObjectiveEarlyStopping(60)
+    status = solver.SolveWithSolutionCallback(model, o)
+
+    print("----")
+    print(solver.SolutionInfo())
+    print(solver.ResponseStats())
+    sys.stdout.flush()
+
+    solution = None
+    if status == cp_model.FEASIBLE or status == cp_model.OPTIMAL:
+        solution = vars.get_cache(status=status, solver=solver)
+        solution.write_results_to_file(output_dir=os.path.join(output_subdir,"solution"))
+
+    o.cancel_timer_thread()
+
+    return solution
+
+
+def optimize_d_plus_n(
+        path_to_read_costs,
+        reads: IncrementalIdMap,
+        samples: IncrementalIdMap,
+        cost_norm_factor: float,
+        paths: Paths,
+        sample_to_reads: dict,
+        output_dir: str,
+        n_threads: int = 1):
+
+    output_subdir = os.path.join(output_dir, "optimizer")
+
+    # First optimize for unconstrained cost first, and fetch the corresponding n value
+    vars = Variables()
+    model = cp_model.CpModel()
+
+    vars, model = construct_base_model(
+        vars=vars,
+        model=model,
+        reads=reads,
+        paths=paths,
+        sample_to_reads=sample_to_reads,
+        path_to_read_costs=path_to_read_costs
+    )
+
+    # Add boolean indicators which imply that a path has been used (assigned any read)
+    # for path_id in paths.ids():
+    #     vars.path[path_id] = model.NewBoolVar("p" + str(path_id))
+    #
+    #     # Accumulate all possible assignments of this path to any reads
+    #     v = [vars.path_to_read[(path_id,read_id)] for read_id in reads.ids() if (path_id,read_id) in path_to_read_costs]
+    #     s = sum(v)
+    #
+    #     if len(v) == 0:
+    #         print("WARNING: skipping path id %d because has no viable path assignments" % path_id)
+    #         continue
+    #
+    #     model.Add(s >= 1).OnlyEnforceIf(vars.path[path_id])
+    #     model.Add(s == 0).OnlyEnforceIf(vars.path[path_id].Not())
+
+    # Cost term a: sum of edit distances for all reads assigned to haplotypes
+    vars.cost_d = model.NewIntVar(0, 100_000_000, "cost_d")
+    model.Add(vars.cost_d == sum([c * vars.path_to_read[e] for e,c in path_to_read_costs.items()]))
+
+    # Cost term b: sum of unique haplotypes used
+    vars.cost_n = model.NewIntVar(0, 100_000_000, "cost_n")
+    model.Add(vars.cost_n == sum([x for x in vars.path.values()]))
+
+    vars.validate(sample_id_to_read_ids=sample_to_reads, sample_id_map=samples, path_to_read_costs=path_to_read_costs)
+
+    solver = cp_model.CpSolver()
+    solver.parameters.num_search_workers = n_threads
+
+    status = None
+
+    model.Minimize(vars.cost_d + cost_norm_factor*vars.cost_n)
+
+    # It's critical to STOP THE TIMER after this finishes because it relies on a thread which will run on
+    # past the solution for as long as the timer is set, potentially starving future iterations of threads.
+    o = ObjectiveEarlyStopping(60)
+    status = solver.SolveWithSolutionCallback(model, o)
+
+    print("----")
+    print(solver.SolutionInfo())
+    print(solver.ResponseStats())
+    sys.stdout.flush()
+
+    solution = None
+    if status == cp_model.FEASIBLE or status == cp_model.OPTIMAL:
+        solution = vars.get_cache(status=status, solver=solver)
+        solution.write_results_to_file(output_dir=os.path.join(output_subdir,"solution"))
+
+    o.cancel_timer_thread()
+
+    return solution
+
+
+def optimize_with_d_norm(
+        path_to_read_costs,
+        reads: IncrementalIdMap,
+        samples: IncrementalIdMap,
+        paths: Paths,
+        sample_to_reads: dict,
+        output_dir: str,
+        n_threads: int = 1):
+
+    min_d_solution = optimize_d(
+        path_to_read_costs=path_to_read_costs,
+        reads=reads,
+        samples=samples,
+        paths=paths,
+        sample_to_reads=sample_to_reads,
+        output_dir=output_dir,
+        n_threads=n_threads)
+
+    # Multiply the n cost by a factor which attempts to balance the two objectives
+    norm_factor = min_d_solution.cost_d/len(reads)
+
+    solution = optimize_d_plus_n(
+        path_to_read_costs=path_to_read_costs,
+        reads=reads,
+        samples=samples,
+        paths=paths,
+        cost_norm_factor=norm_factor,
+        sample_to_reads=sample_to_reads,
+        output_dir=output_dir,
+        n_threads=n_threads)
+
+    return solution
+
+
+def get_multiobjective_best_solution(results, n_stop, region_string, output_directory):
+    if len(results) == 0:
+        sys.stderr.write("WARNING: Region failed due to infeasibility of optimization: %s\n" % region_string)
+        return "Region failed due to infeasibility of optimization\n"
+
+    # TODO: replace this with average error rate per read?
+    c_target = 0
+
+    # TODO: replace this with regional heterozygosity estimate
+    n_target = 0
+
+    fig,axes = pyplot.subplots(nrows=1, ncols=1)
+
+    c_start = sys.maxsize
+    c_stop = 0
+    n_start = 1
+    # n_stop = len(data_per_sample.keys())
+
+    for n,cache in results.items():
+        if cache.cost_d < c_start:
+            c_start = cache.cost_d
+
+        if cache.cost_d > c_stop:
+            c_stop = cache.cost_d
+
+    print("----")
+    print("n",n_start,n_stop)
+    print("c",c_start,c_stop)
+    print()
+
+    d_min = sys.maxsize
+    c_min = None
+    n_min = None
+    c_per_read_min = None
+    n_norm_min = None
+    c_norm_min = None
+
+    for n,cache in results.items():
+        # Normalize the range of outputs for n and c if a range exists
+        # A constant of 1 is added to make the c_norm more impactful on total distance from utopia point
+        if c_stop == c_start:
+            c_norm = c_start
+        else:
+            c_norm = float(cache.cost_d - c_start) / float(c_stop - c_start) + 1
+
+        if n_stop == n_start:
+            n_norm = n_start
+        else:
+            n_norm = (float(n) - n_start) / float(n_stop - n_start) + 0.001
+
+        distance = math.sqrt((c_norm-c_target)**2 + (n_norm-n_target)**2)
+        if distance < d_min:
+            d_min = distance
+            n_min = n
+            c_min = cache.cost_d
+
+            # For plotting
+            n_norm_min = n_norm
+            c_norm_min = c_norm
+
+        axes.scatter(n_norm, c_norm, color="C0")
+        axes.plot([n_target,n_norm], [c_target,c_norm], color="gray")
+        axes.text(n_norm, c_norm, "%.4f" % distance)
+
+    best_result = results[n_min]
+
+    axes.plot(n_norm_min, c_norm_min, color="C1", marker='o', markerfacecolor='none', markersize=6)
+    axes.text(n_norm_min, c_norm_min, "n=%d" % n_min, color="red", ha='right', va='top')
+
+    axes.set_title("Results for %s" % region_string)
+    axes.set_xlabel("n_norm")
+    axes.set_ylabel("c_norm")
+
+    optimizer_results_path = os.path.join(output_directory, "optimizer_results.png")
+    pyplot.savefig(optimizer_results_path, dpi=200)
+    pyplot.close()
+
+    return n_min, best_result
 
 
 def get_spanning_reads(alleles, gaf_path):
@@ -946,85 +1391,155 @@ def filter_costs(path_to_read_costs, read_id_map, read_to_sample, max_path_to_re
     return path_to_read_costs
 
 
-def get_multiobjective_best_solution(results, n_stop, region_string, output_directory):
-    if len(results) == 0:
-        sys.stderr.write("WARNING: Region failed due to infeasibility of optimization: %s\n" % region_string)
-        return "Region failed due to infeasibility of optimization\n"
+def write_costs_to_file(output_directory, path_to_read_costs, paths, read_id_map, read_to_sample, sample_id_map):
+    costs_output_path = os.path.join(output_directory, "costs.csv")
+    with open(costs_output_path, 'w') as file:
+        file.write("path_id,read_id,sample_id,path_name,read_name,sample_name,value")
+        file.write('\n')
+        for key,value in path_to_read_costs.items():
+            path_id = str(key[0])
+            path_name = paths.get_path_name(key[0])
+            read_id = str(key[1])
+            read_name = read_id_map.get_name(key[1])
 
-    # TODO: replace this with average error rate per read?
-    c_target = 0
+            sample_name = read_to_sample[read_name]
+            sample_id = str(sample_id_map.get_id(sample_name))
 
-    # TODO: replace this with regional heterozygosity estimate
-    n_target = 0
+            file.write(','.join([path_id,read_id,sample_id,path_name,read_name,sample_name,str(value)]))
+            file.write('\n')
 
-    histogram_path = os.path.join(output_directory, "path_global_score_histogram.png")
 
-    pyplot.savefig(histogram_path, dpi=200)
-    pyplot.close('all')
+def get_read_costs_from_alignments(
+        bam_paths,
+        read_id_map,
+        spanning_reads,
+        paths,
+        flank_length,
+        interval_pad_length,
+        path_to_read_costs):
 
-    fig,axes = pyplot.subplots(nrows=1, ncols=1)
+    # For now, double counting softclips is allowed, because we don't really care,
+    # the alignment to the true haplotype should contain no clips
+    non_match_ops = {'X','I','D','S'}
 
-    c_start = sys.maxsize
-    c_stop = 0
-    n_start = 1
-    # n_stop = len(data_per_sample.keys())
+    min_path_edit_distance = float("inf")
 
-    for n,cache in results.items():
-        if cache.cost_a < c_start:
-            c_start = cache.cost_a
+    # Because of the potential for supplementary alignments, need to first aggregate costs per read
+    for bam_path in bam_paths:
+        sys.stderr.write(bam_path)
+        sys.stderr.write('\n')
 
-        if cache.cost_a > c_stop:
-            c_stop = cache.cost_a
+        bam = pysam.AlignmentFile(bam_path, 'rb')
 
-    print("----")
-    print("n",n_start,n_stop)
-    print("c",c_start,c_stop)
-    print()
+        total = 0.0
+        n = 0.0
+        for alignment in bam:
+            read_name = alignment.query_name
+            read_id = read_id_map.get_id(read_name)
 
-    d_min = sys.maxsize
-    c_min = None
-    n_min = None
-    c_per_read_min = None
-    n_norm_min = None
-    c_norm_min = None
+            # TODO: [optimize] eventually alignment should be done in memory, and this filtering step could be performed
+            # before aligning the reads with minimap2, which would save (potentially considerable) time
+            if read_name not in spanning_reads:
+                continue
 
-    for n,cache in results.items():
-        # Normalize the range of outputs for n and c if a range exists
-        # A constant of 1 is added to make the c_norm more impactful on total distance from utopia point
-        if c_stop == c_start:
-            c_norm = c_start
-        else:
-            c_norm = float(cache.cost_a - c_start) / float(c_stop - c_start) + 1
+            # TODO: [fix] verify that the NM tag is not double-counting softclips/hardclips in a supplementary alignment?
+            # not sure how much this affects results, if there is a dup, it should be represented in the path already
+            path_name = bam.header.get_reference_name(alignment.reference_id)
+            path_id = paths.get_path_id(path_name)
+            path_length = bam.get_reference_length(path_name)
 
-        if n_stop == n_start:
-            n_norm = n_start
-        else:
-            n_norm = (float(n) - n_start) / float(n_stop - n_start) + 0.001
+            window_start = flank_length
+            window_stop = path_length - flank_length + 1
 
-        distance = math.sqrt((c_norm-c_target)**2 + (n_norm-n_target)**2)
-        if distance < d_min:
-            d_min = distance
-            n_min = n
-            c_min = cache.cost_a
+            # Sometimes unpredictability in the alignment pushes a large indel just beyond the window...
+            # this is added as a margin of safety to catch those. Since the windows are built requiring an empty
+            # padding between them, we can use that to decide how much space is safe to look for relevant edits
+            window_start -= interval_pad_length
+            window_stop += interval_pad_length
 
-            # For plotting
-            n_norm_min = n_norm
-            c_norm_min = c_norm
+            alignment_start = alignment.reference_start
+            alignment_stop = alignment.reference_end
 
-        axes.scatter(n_norm, c_norm, color="C0")
-        axes.plot([n_target,n_norm], [c_target,c_norm], color="gray")
-        axes.text(n_norm, c_norm, "%.4f" % distance)
+            # Check that read is spanning this haplotype (without any softclips)
+            # If it's not spanning, add a fixed length penalty to break tie cases between haplotypes
+            # TODO: fix this in the region selection process, not by having a constant
+            if not alignment_start < window_start < window_stop < alignment_stop:
+                path_to_read_costs[(path_id,read_id)] += 10
 
-    best_result = results[n_min]
+            if not alignment.is_secondary:
+                for ref_start,ref_stop,query_start,query_stop,operation,length in iterate_cigar(alignment):
+                    c = cigar_index_to_char[operation]
+                    is_non_match = (c in non_match_ops)
 
-    axes.plot(n_norm_min, c_norm_min, color="C1", marker='o', markerfacecolor='none', markersize=6)
-    axes.text(n_norm_min, c_norm_min, "n=%d" % n_min, color="red", ha='right', va='top')
+                    # This iterator might not give ordered ref start/stop if the read is reversed (TODO: make a ref-oriented version?)
+                    if ref_stop < ref_start:
+                        r = ref_stop
+                        ref_stop = ref_start
+                        ref_start = r
 
-    axes.set_title("Results for %s" % region_string)
-    axes.set_xlabel("n_norm")
-    axes.set_ylabel("c_norm")
+                    # Cigar is contained entirely in the window
+                    if window_start < ref_start <= ref_stop < window_stop:
+                        cost = length * int(is_non_match)
+                        path_to_read_costs[(path_id,read_id)] += cost
+                        total += cost
 
-    return n_min, best_result
+                    # Cigar covers entire window
+                    elif ref_start <= window_start < window_stop <= ref_stop:
+                        cost = (window_stop - window_start) * int(is_non_match)
+                        path_to_read_costs[(path_id,read_id)] += cost
+                        total += cost
+
+                    # Cigar is overlapping the start of the window
+                    elif ref_start <= window_start <= ref_stop:
+                        if is_ref_move[operation]:
+                            cost = (ref_stop - window_start) * int(is_non_match)
+                        else:
+                            cost = length * int(is_non_match)
+
+                        path_to_read_costs[(path_id,read_id)] += cost
+                        total += cost
+
+                    # Cigar is overlapping the end of the window
+                    elif ref_start <= window_stop <= ref_stop:
+                        if is_ref_move[operation]:
+                            cost = (window_stop - ref_start) * int(is_non_match)
+                        else:
+                            cost = length * int(is_non_match)
+
+                        path_to_read_costs[(path_id,read_id)] += cost
+                        total += cost
+
+                n += 1
+
+        if total < min_path_edit_distance:
+            min_path_edit_distance = total
+
+        avg_edit_distance = total/n
+
+    return path_to_read_costs
+
+
+def write_path_assignments_to_file(solution, sample_id_map, paths, alleles, output_directory):
+    counter = defaultdict(int)
+
+    assigned_haplotypes_path = os.path.join(output_directory, "assigned_haplotypes.fasta")
+    with open(assigned_haplotypes_path, 'w') as file:
+        for [path_id,sample_id],value in solution.path_to_sample.items():
+            # Only consider combinations of path/sample that were actually assigned by the optimizer
+            if value == 0:
+                continue
+
+            counter[sample_id] += 1
+            sample_name = sample_id_map.get_name(sample_id)
+            sequence_name = sample_name + "_" + str(counter[sample_id])
+
+            file.write(">" + sequence_name)
+            file.write("\n")
+            for i in paths.get_path(path_id):
+                file.write(alleles[i].sequence)
+
+            file.write("\n")
+
 
 
 def infer_haplotypes(
@@ -1171,6 +1686,7 @@ def infer_haplotypes(
     sample_to_reads = defaultdict(list)
     read_id_map = IncrementalIdMap()
 
+    # Extract all the relevant reads from the ref genome alignment
     for sample_name,data in data_per_sample.items():
         bam_path = data["bam"]
         print("bam_path:", bam_path)
@@ -1198,6 +1714,7 @@ def infer_haplotypes(
 
     a = time.time()
 
+    # Align the relevant reads to the variant graph
     output_gaf_path = run_minigraph(
         output_directory=output_directory,
         gfa_path=output_gfa_path,
@@ -1206,6 +1723,7 @@ def infer_haplotypes(
     b = time.time()
     time_elapsed_minigraph = b - a
 
+    # Accumulate path weights in the variant graph by parsing the GAF
     update_edge_weights_using_alignments(
         alleles=alleles,
         gaf_path=output_gaf_path,
@@ -1226,6 +1744,7 @@ def infer_haplotypes(
 
     paths = Paths()
 
+    # Only retain the reads that spanned from source to sink in the graph
     spanning_reads = get_spanning_reads(
         alleles=alleles,
         gaf_path=output_gaf_path,
@@ -1246,6 +1765,8 @@ def infer_haplotypes(
 
     a = time.time()
 
+    # Do an exhaustive all-vs-all alignment of reads to each linearized path to get scores for the optimizer
+    # TODO: filter the alignments before even reaching this step? Wasteful to align all-vs-all
     bam_paths = list()
     for p,path in enumerate(fasta_paths):
         bam_path = run_minimap2(
@@ -1263,6 +1784,7 @@ def infer_haplotypes(
 
     time_elapsed_minimap = b - a
 
+    # Optionally generate the alignment of paths to the ref, for debug/dev purposes
     if generate_debug_alignments:
         chromosome_fasta_path = os.path.join(output_directory, chromosome + ".fasta")
         with open(chromosome_fasta_path, 'w') as file:
@@ -1299,104 +1821,15 @@ def infer_haplotypes(
 
     path_to_read_costs = defaultdict(int)
 
-    # For now, double counting softclips is allowed, because we don't really care,
-    # the alignment to the true haplotype should contain no clips
-    non_match_ops = {'X','I','D','S'}
-
-    min_path_edit_distance = float("inf")
-
-    # Because of the potential for supplementary alignments, need to first aggregate costs per read
-    for bam_path in bam_paths:
-        sys.stderr.write(bam_path)
-        sys.stderr.write('\n')
-
-        bam = pysam.AlignmentFile(bam_path, 'rb')
-
-        total = 0.0
-        n = 0.0
-        for alignment in bam:
-            read_name = alignment.query_name
-            read_id = read_id_map.get_id(read_name)
-
-            # TODO: [optimize] eventually alignment should be done in memory, and this filtering step could be performed
-            # before aligning the reads with minimap2, which would save (potentially considerable) time
-            if read_name not in spanning_reads:
-                continue
-
-            # TODO: [fix] verify that the NM tag is not double-counting softclips/hardclips in a supplementary alignment?
-            # not sure how much this affects results, if there is a dup, it should be represented in the path already
-            path_name = bam.header.get_reference_name(alignment.reference_id)
-            path_id = paths.get_path_id(path_name)
-            path_length = bam.get_reference_length(path_name)
-
-            window_start = flank_length
-            window_stop = path_length - flank_length + 1
-
-            # Sometimes unpredictability in the alignment pushes a large indel just beyond the window...
-            # this is added as a margin of safety to catch those. Since the windows are built requiring an empty
-            # padding between them, we can use that to decide how much space is safe to look for relevant edits
-            window_start -= interval_pad_length
-            window_stop += interval_pad_length
-
-            alignment_start = alignment.reference_start
-            alignment_stop = alignment.reference_end
-
-            # Check that read is spanning this haplotype (without any softclips)
-            # If it's not spanning, add a fixed length penalty to break tie cases between haplotypes
-            # TODO: fix this in the region selection process, not by having a constant
-            if not alignment_start < window_start < window_stop < alignment_stop:
-                path_to_read_costs[(path_id,read_id)] += 10
-
-            if not alignment.is_secondary:
-                for ref_start,ref_stop,query_start,query_stop,operation,length in iterate_cigar(alignment):
-                    c = cigar_index_to_char[operation]
-                    is_non_match = (c in non_match_ops)
-
-                    # This iterator might not give ordered ref start/stop if the read is reversed (TODO: make a ref-oriented version?)
-                    if ref_stop < ref_start:
-                        r = ref_stop
-                        ref_stop = ref_start
-                        ref_start = r
-
-                    # Cigar is contained entirely in the window
-                    if window_start < ref_start <= ref_stop < window_stop:
-                        cost = length * int(is_non_match)
-                        path_to_read_costs[(path_id,read_id)] += cost
-                        total += cost
-
-                    # Cigar covers entire window
-                    elif ref_start <= window_start < window_stop <= ref_stop:
-                        cost = (window_stop - window_start) * int(is_non_match)
-                        path_to_read_costs[(path_id,read_id)] += cost
-                        total += cost
-
-                    # Cigar is overlapping the start of the window
-                    elif ref_start <= window_start <= ref_stop:
-                        if is_ref_move[operation]:
-                            cost = (ref_stop - window_start) * int(is_non_match)
-                        else:
-                            cost = length * int(is_non_match)
-
-                        path_to_read_costs[(path_id,read_id)] += cost
-                        total += cost
-
-                    # Cigar is overlapping the end of the window
-                    elif ref_start <= window_stop <= ref_stop:
-                        if is_ref_move[operation]:
-                            cost = (window_stop - ref_start) * int(is_non_match)
-                        else:
-                            cost = length * int(is_non_match)
-
-                        path_to_read_costs[(path_id,read_id)] += cost
-                        total += cost
-
-                n += 1
-
-        if total < min_path_edit_distance:
-            min_path_edit_distance = total
-
-        avg_edit_distance = total/n
-        histogram.update(avg_edit_distance)
+    # Parse the exhaustive linear alignments to get the cost of assigning each read to each path
+    path_to_read_costs = get_read_costs_from_alignments(
+        bam_paths=bam_paths,
+        read_id_map=read_id_map,
+        spanning_reads=spanning_reads,
+        paths=paths,
+        flank_length=flank_length,
+        interval_pad_length=interval_pad_length,
+        path_to_read_costs=path_to_read_costs)
 
     reads_csv_path = os.path.join(output_directory, "reads.csv")
     read_id_map.write_to_file(reads_csv_path)
@@ -1433,6 +1866,8 @@ def infer_haplotypes(
     # TODO: do a better job of addressing situations where there is no diploid infeasibility, but all reads of a sample
     # are removed as a result of bad read-to-graph alignment. As an SV merger it is fair to exclude those samples
     # but should they be caught somehow and reported as empty?
+
+    # Filter the edges from path to read that will be used in the model (for saving computational complexity)
     filter_costs(
         path_to_read_costs=path_to_read_costs,
         read_id_map=read_id_map,
@@ -1446,34 +1881,45 @@ def infer_haplotypes(
 
     axes.plot(histogram.get_bin_centers(), histogram.get_histogram(), color="#007cbe")
 
-    costs_output_path = os.path.join(output_directory, "costs.csv")
-    with open(costs_output_path, 'w') as file:
-        file.write("path_id,read_id,sample_id,path_name,read_name,sample_name,value")
-        file.write('\n')
-        for key,value in path_to_read_costs.items():
-            path_id = str(key[0])
-            path_name = paths.get_path_name(key[0])
-            read_id = str(key[1])
-            read_name = read_id_map.get_name(key[1])
-
-            sample_name = read_to_sample[read_name]
-            sample_id = str(sample_id_map.get_id(sample_name))
-
-            file.write(','.join([path_id,read_id,sample_id,path_name,read_name,sample_name,str(value)]))
-            file.write('\n')
+    write_costs_to_file(
+        output_directory=output_directory,
+        path_to_read_costs=path_to_read_costs,
+        paths=paths,
+        read_id_map=read_id_map,
+        read_to_sample=read_to_sample,
+        sample_id_map=sample_id_map)
 
     a = time.time()
 
-    # If optimizing for multiple objectives, gather the pareto solutions first (all n values)
-    results = optimize_with_cpsat(
+    # # If optimizing for multiple objectives, gather the pareto solutions first (all n values)
+    # results = find_all_pareto_solutions(
+    #     path_to_read_costs=path_to_read_costs,
+    #     reads=read_id_map,
+    #     samples=sample_id_map,
+    #     paths=paths,
+    #     sample_to_reads=sample_id_to_read_ids,
+    #     n_threads=30,
+    #     output_dir=output_directory
+    # )
+    #
+    # n_stop = len(data_per_sample.keys())
+    #
+    # # Find best compromise among pareto solutions
+    # n_min, solution = get_multiobjective_best_solution(
+    #     results=results,
+    #     n_stop=n_stop,
+    #     region_string=region_string,
+    #     output_directory=output_directory
+    # )
+
+    solution = optimize_n(
         path_to_read_costs=path_to_read_costs,
         reads=read_id_map,
         samples=sample_id_map,
         paths=paths,
         sample_to_reads=sample_id_to_read_ids,
-        n_threads=30,
-        output_dir=output_directory
-    )
+        output_dir=output_directory,
+        n_threads=n_threads)
 
     b = time.time()
     time_elapsed_optimizer = b - a
@@ -1481,39 +1927,12 @@ def infer_haplotypes(
     # Before writing the final output alleles, trim the flanking sequence (to make evaluation simpler)
     trim_flanks_from_ref_alleles(alleles, flank_length)
 
-    n_stop = len(data_per_sample.keys())
-
-    # Find best compromise among pareto solutions
-    n_min, solution = get_multiobjective_best_solution(
-        results=results,
-        n_stop=n_stop,
-        region_string=region_string,
-        output_directory=output_directory
-    )
-
-    counter = defaultdict(int)
-
-    assigned_haplotypes_path = os.path.join(output_directory, "assigned_haplotypes.fasta")
-    with open(assigned_haplotypes_path, 'w') as file:
-        for [path_id,sample_id],value in solution.path_to_sample.items():
-            # Only consider combinations of path/sample that were actually assigned by the optimizer
-            if value == 0:
-                continue
-
-            counter[sample_id] += 1
-            sample_name = sample_id_map.get_name(sample_id)
-            sequence_name = sample_name + "_" + str(counter[sample_id])
-
-            file.write(">" + sequence_name)
-            file.write("\n")
-            for i in paths.get_path(path_id):
-                file.write(alleles[i].sequence)
-
-            file.write("\n")
-
-    optimizer_results_path = os.path.join(output_directory, "optimizer_results.png")
-    pyplot.savefig(optimizer_results_path, dpi=200)
-    pyplot.close()
+    write_path_assignments_to_file(
+        solution=solution,
+        sample_id_map=sample_id_map,
+        paths=paths,
+        alleles=alleles,
+        output_directory=output_directory)
 
     genotype_support_output_path = os.path.join(output_directory, "genotype_support.csv")
 
@@ -1528,8 +1947,8 @@ def infer_haplotypes(
     time_elapsed_total = time_stop - time_start
 
     summary_string = \
-        "n,%d\n" % n_min + \
-        "c,%d\n" % solution.cost_a + \
+        "n,%d\n" % solution.cost_n + \
+        "c,%d\n" % solution.cost_d + \
         "n_candidates,%d\n" % len(paths) + \
         "n_spanning_reads,%d\n" % len(spanning_reads) + \
         "time_elapsed_minigraph_s,%d\n" % time_elapsed_minigraph + \
@@ -1616,7 +2035,7 @@ def read_config_from_json(json_path):
     return flank_length, min_coverage, max_path_to_read_cost, bed_path, sample_names, ref_path, input_directory, output_directory
 
 
-def main(json_path):
+def main(json_path, max_parameters, n_threads):
     flank_length, min_coverage, max_path_to_read_cost, bed_path, sample_names, ref_path, input_directory, output_directory = read_config_from_json(json_path)
 
     if not os.path.exists(output_directory):
@@ -1674,8 +2093,8 @@ def main(json_path):
     summary_strings = list()
     for region in regions:
         summary_string = infer_haplotypes(
-            n_threads=30,
-            parameter_size_cutoff=10000,
+            n_threads=n_threads,
+            parameter_size_cutoff=max_parameters,
             interval_pad_length=150,
             ref_path=ref_path,
             data_per_sample=data_per_sample,
@@ -1707,8 +2126,26 @@ if __name__ == "__main__":
         help="Input json containing relevant variables to be used during run. Please see repository data/template.json for details"
     )
 
+    parser.add_argument(
+        "-t","--n_threads",
+        required=False,
+        default=1,
+        type=int,
+        help="Number of threads to use (recommended 15-30)"
+    )
+
+    parser.add_argument(
+        "-p","--max_parameters",
+        required=False,
+        default=sys.maxsize,
+        type=int,
+        help="Maximum size of optimization problem to attempt"
+    )
+
     args = parser.parse_args()
 
     main(
         json_path=args.json,
+        max_parameters=args.max_parameters,
+        n_threads=args.n_threads
     )
