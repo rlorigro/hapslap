@@ -688,17 +688,17 @@ def evaluate_test_haplotypes(
             if d == sys.maxsize:
                 s = "inf"
 
-            axes.text(x_margin, y, s)
+            axes.text(x_margin, y, s, fontsize=8)
             axes.axhline(y, linestyle="--",linewidth=0.5)
 
         networkx.draw(tree,pos, alpha=0.6, node_size=sizes, node_color=colors)
 
-        axes.set_title("Ref clusters represented by test haplotypes")
+        axes.set_title("Ref clusters represented by test haplotypes\n%s n=%d" % (prefix, len(test_sequences)))
         fig.tight_layout()
 
         figure_output_path = os.path.join(output_dir, prefix + "_tree.png")
         fig.set_size_inches(12,6)
-        pyplot.savefig(figure_output_path, dpi=200)
+        pyplot.savefig(figure_output_path, dpi=300)
 
         # pyplot.show()
         pyplot.close()
