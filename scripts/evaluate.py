@@ -1,10 +1,9 @@
-import multiprocessing
-
+from modules.Align import align_and_get_indel_distance,cross_align_sequences,align_sequences_to_other_sequences
 from modules.IterativeHistogram import IterativeHistogram
 from modules.IncrementalIdMap import IncrementalIdMap
+from modules.Sequence import Sequence,iterate_fasta
 from modules.Cigar import get_haplotypes_of_region
 from modules.Bam import download_regions_of_bam
-from modules.Sequence import Sequence
 
 from itertools import combinations
 from multiprocessing import Pool
@@ -32,127 +31,6 @@ def truncate_colormap(cmap, minval=0.0, maxval=1.0, n=100):
         'trunc({n},{a:.2f},{b:.2f})'.format(n=cmap.name, a=minval, b=maxval),
         cmap(numpy.linspace(minval, maxval, n)))
     return new_cmap
-
-
-def iterate_fasta(path, force_upper_case=True, normalize_name=True):
-    name = ""
-    sequence = ""
-
-    with open(path, 'r') as file:
-        for l,line in enumerate(file):
-            if line.startswith('>'):
-                if force_upper_case:
-                    sequence = sequence.upper()
-
-                # Output previous sequence
-                if l > 0:
-                    s = Sequence(name, sequence)
-
-                    if len(s) != 0:
-                        if normalize_name:
-                            s.normalize_name()
-
-                        yield s
-
-                name = line.strip()[1:].split(' ')[0]
-                sequence = ""
-
-            else:
-                sequence += line.strip()
-
-    if force_upper_case:
-        sequence = sequence.upper()
-
-    s = Sequence(name, sequence)
-
-    if len(s) != 0:
-        if normalize_name:
-            s.normalize_name()
-
-        yield s
-
-
-def get_indel_distance_from_string(alignment: dict, minimum_indel_length=1):
-    total_indels = 0
-
-    length_token = ""
-    for c in alignment["cigars"]:
-        if c.isnumeric():
-            length_token += c
-        else:
-            l = int(length_token)
-            if l >= minimum_indel_length and (c == 'I' or c == 'D'):
-                total_indels += l
-
-    return total_indels
-
-
-def get_indel_distance_from_tuples(cigar_tuples):
-    total_indels = 0
-
-    for c,l in cigar_tuples:
-        if c == 1 or c == 2:
-            total_indels += l
-
-    return total_indels
-
-
-def align_and_get_indel_distance(a:Sequence,b:Sequence,output_dir=None):
-    if len(a) == 0 or len(b) == 0:
-        return max(len(a),len(b))
-
-    aligner = WavefrontAligner(heuristic="adaptive")
-
-    aligner(a.sequence,b.sequence)
-
-    if aligner.status != 0:
-        return max(len(a),len(b))
-
-    d = get_indel_distance_from_tuples(aligner.cigartuples)
-
-    if output_dir is not None:
-        output_path = os.path.join(output_dir, a.name + "_" + b.name + ".txt")
-        aligner.cigar_print_pretty(output_path)
-
-    return d
-
-
-def cross_align_sequences(sequences:dict, n_threads,output_dir=None):
-    pairs = list()
-    lengths = list()
-    args = list()
-
-    for a,b in combinations(sequences.values(),2):
-        if a == b:
-            continue
-
-        lengths.append((len(a),len(b)))
-        pairs.append((a.name,b.name))
-        args.append((a,b,output_dir))
-
-    results = None
-    with Pool(n_threads) as pool:
-        results = pool.starmap(align_and_get_indel_distance, args)
-
-    return pairs,lengths,results
-
-
-def align_sequences_to_other_sequences(a_seqs:dict, b_seqs:dict, n_threads:int, output_dir:str=None):
-    pairs = list()
-    lengths = list()
-    args = list()
-
-    for a_name,a in a_seqs.items():
-        for b_name,b in b_seqs.items():
-            lengths.append((len(a),len(b)))
-            pairs.append((a,b))
-            args.append((a,b,output_dir))
-
-    results = None
-    with Pool(n_threads) as pool:
-        results = pool.starmap(align_and_get_indel_distance, args)
-
-    return pairs,lengths,results
 
 
 def orient_test_haps_by_best_match(ref_sequences, test_sequences, id_map):
@@ -268,8 +146,8 @@ def write_formatted_alignments_per_sample():
 
         id_map = IncrementalIdMap()
 
-        ref_sequences = {x.name:x for x in iterate_fasta(ref_path)}
-        test_sequences = {x.name:x for x in iterate_fasta(test_path)}
+        ref_sequences = {x.name:x for x in iterate_fasta(ref_path, force_upper_case=True, normalize_name=True)}
+        test_sequences = {x.name:x for x in iterate_fasta(test_path, force_upper_case=True, normalize_name=True)}
 
         duplicated_homozygous_haps = set()
         test_sequences,test_duplicated = duplicate_homozygous_haps(test_sequences)
@@ -293,7 +171,7 @@ def write_formatted_alignments_per_sample():
 def evaluate_upper_bound(ref_sequences, haplotype_fasta_path, output_dir, prefix, flank_size, distance_threshold, n_threads):
     test_sequences = dict()
 
-    for item in iterate_fasta(haplotype_fasta_path, normalize_name=False):
+    for item in iterate_fasta(haplotype_fasta_path, force_upper_case=True, normalize_name=False):
         item.sequence = item.sequence[flank_size:len(item.sequence) - flank_size]
         test_sequences[item.name] = item
 
@@ -498,7 +376,7 @@ def evaluate_test_haplotypes(
             continue
 
         ref_sequences = {x.name:x for x in results if x is not None}
-        test_sequences = {x.name:x for x in iterate_fasta(test_path)}
+        test_sequences = {x.name:x for x in iterate_fasta(test_path, force_upper_case=True, normalize_name=True)}
 
         feasible_samples = evaluate_upper_bound(ref_sequences, all_haplotypes_path, output_dir, prefix, flank_length, distance_threshold, n_threads)
 

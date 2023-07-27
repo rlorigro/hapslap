@@ -631,7 +631,5 @@ def test():
     print("\nTESTING: ", chromosome, start, stop)
     test_region(test_sam_path=test_sam_path, chromosome=chromosome, start=start, stop=stop)
 
-
-
 if __name__ == "__main__":
     test()

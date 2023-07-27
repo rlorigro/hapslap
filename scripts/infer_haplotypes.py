@@ -1,9 +1,11 @@
+import ortools.sat.python.cp_model
+
+from modules.Align import run_minimap2,run_minigraph,run_mashmap,run_minimap2_on_read_subset
 from modules.Cigar import iterate_cigar,cigar_index_to_char,is_ref_move
 from modules.IterativeHistogram import IterativeHistogram
 from modules.IncrementalIdMap import IncrementalIdMap
 from modules.Bam import get_region_from_bam
 from modules.Bed import parse_bed_regions
-from modules.Align import run_minimap2
 from modules.Vcf import vcf_to_graph
 from modules.Authenticator import *
 from modules.Paths import Paths
@@ -329,6 +331,21 @@ class Variables:
 
         return cache
 
+    def infer_n(self, solver, path_to_read_costs, paths, reads):
+        n = 0
+        for path_id in paths.ids():
+            v = [self.path_to_read[(path_id,read_id)] for read_id in reads.ids() if (path_id,read_id) in path_to_read_costs]
+            n += sum(v) > 0
+
+        if type(n) == ortools.sat.python.cp_model.IntVar:
+            return solver.Value(n)
+
+        elif type(n) == int:
+            return n
+
+        else:
+            return None
+
     def write_results_to_file(self, output_dir: str):
         if not self.is_cache:
             raise Exception("ERROR: cannot write live instance of variables, must get cache instead")
@@ -477,7 +494,7 @@ def construct_base_model(
     for read_id in reads.ids():
         v = [vars.path_to_read[(path_id,read_id)] for path_id in paths.ids() if (path_id,read_id) in path_to_read_costs]
         if len(v) == 0:
-            print("WARNING: skipping read id %d because has no viable path assignments" % read_id)
+            # print("WARNING: skipping read id %d because has no viable path assignments" % read_id)
             continue
 
         model.Add(sum(v) == 1)
@@ -499,7 +516,7 @@ def construct_base_model(
             v = [vars.path_to_read[(path_id,read_id)] for read_id in read_group if (path_id,read_id) in path_to_read_costs]
             s = sum(v)
             if len(v) == 0:
-                print("WARNING: skipping path id %d because has no viable path assignments" % path_id)
+                # print("WARNING: skipping path id %d because has no viable path assignments" % path_id)
                 continue
 
             model.Add(s >= 1).OnlyEnforceIf(vars.path_to_sample[edge])
@@ -620,115 +637,6 @@ def find_all_pareto_solutions(
     return results
 
 
-def find_all_pareto_solutions_2(
-        path_to_read_costs,
-        reads: IncrementalIdMap,
-        samples: IncrementalIdMap,
-        paths: Paths,
-        sample_to_reads: dict,
-        output_dir: str,
-        n_threads: int = 1):
-
-    output_subdir = os.path.join(output_dir, "optimizer")
-
-    # First optimize for unconstrained cost first, and fetch the corresponding n value
-    vars = Variables()
-    model = cp_model.CpModel()
-
-    vars, model = construct_base_model(
-        vars=vars,
-        model=model,
-        reads=reads,
-        paths=paths,
-        sample_to_reads=sample_to_reads,
-        path_to_read_costs=path_to_read_costs
-    )
-
-    # Add boolean indicators which imply that a path has been used (assigned any read)
-    for path_id in paths.ids():
-        vars.path[path_id] = model.NewBoolVar("p" + str(path_id))
-
-        # Accumulate all possible assignments of this path to any reads
-        v = [vars.path_to_read[(path_id,read_id)] for read_id in reads.ids() if (path_id,read_id) in path_to_read_costs]
-        s = sum(v)
-
-        if len(v) == 0:
-            print("WARNING: skipping path id %d because has no viable path assignments" % path_id)
-            continue
-
-        model.Add(s >= 1).OnlyEnforceIf(vars.path[path_id])
-        model.Add(s == 0).OnlyEnforceIf(vars.path[path_id].Not())
-
-    # Cost term a: sum of edit distances for all reads assigned to haplotypes
-    vars.cost_d = model.NewIntVar(0, 100_000_000, "cost_a")
-    model.Add(vars.cost_d == sum([c * vars.path_to_read[e] for e,c in path_to_read_costs.items()]))
-
-    # Cost term b: sum of unique haplotypes used
-    vars.cost_n = model.NewIntVar(0, 100_000_000, "cost_b")
-    model.Add(vars.cost_n == sum([x for x in vars.path.values()]))
-
-    # n diploid samples can at most fill n*2 haplotypes
-    # Sometimes there are may be fewer candidate paths than that
-    max_feasible_haplotypes = min(len(paths), len(sample_to_reads)*2) + 1
-
-    vars.validate(sample_id_to_read_ids=sample_to_reads, sample_id_map=samples, path_to_read_costs=path_to_read_costs)
-
-    for i in range(1,max_feasible_haplotypes):
-        vars.n[i] = model.NewBoolVar("n" + str(i))
-        model.Add(vars.cost_n == i).OnlyEnforceIf(vars.n[i])
-        model.Add(vars.cost_n != i).OnlyEnforceIf(vars.n[i].Not())
-
-    solver = cp_model.CpSolver()
-    solver.parameters.num_search_workers = n_threads
-    # solver.parameters.max_time_in_seconds = 300.0
-    # solver.parameters.log_search_progress = True
-    # solver.log_callback = print
-
-    status = None
-    results = dict()
-    i_prev = None
-
-    for i in range(1,max_feasible_haplotypes):
-        print(i)
-
-        model.ClearAssumptions()
-        model.AddAssumption(vars.n[i])
-        model.Minimize(vars.cost_d)
-
-        if status == cp_model.OPTIMAL:
-            model.ClearHints()
-            for var in vars.path_to_read.values():
-                model.AddHint(var, solver.Value(var))
-
-        # It's critical to STOP THE TIMER after this finishes because it relies on a thread which will run on
-        # past the solution for as long as the timer is set, potentially starving future iterations of threads.
-        o = ObjectiveEarlyStopping(60)
-        status = solver.SolveWithSolutionCallback(model, o)
-
-        print("----")
-        print(solver.SolutionInfo())
-        print(solver.ResponseStats())
-        sys.stdout.flush()
-
-        if status == cp_model.FEASIBLE or status == cp_model.OPTIMAL:
-            results[i] = vars.get_cache(status=status, solver=solver)
-
-        o.cancel_timer_thread()
-
-        if status == cp_model.FEASIBLE or status == cp_model.OPTIMAL:
-            if i_prev is not None and results[i].cost_d > results[i_prev].cost_d:
-                sys.stderr.write("Iteration stopped at n=%d because score worsened\n" % i)
-                break
-
-            i_prev = i
-
-    for i,cache in results.items():
-        print("%d,%d" % (i, cache.cost_d))
-        cache.write_results_to_file(output_dir=os.path.join(output_subdir,str(i)))
-
-    return results
-
-
 def optimize_n(
         path_to_read_costs,
         reads: IncrementalIdMap,
@@ -769,7 +677,7 @@ def optimize_n(
         model.Add(s == 0).OnlyEnforceIf(vars.path[path_id].Not())
 
     # Cost term n: sum of unique haplotypes used
-    vars.cost_n = model.NewIntVar(0, 100_000_000, "cost_b")
+    vars.cost_n = model.NewIntVar(0, 100_000_000, "cost_n")
     model.Add(vars.cost_n == sum([x for x in vars.path.values()]))
 
     vars.validate(sample_id_to_read_ids=sample_to_reads, sample_id_map=samples, path_to_read_costs=path_to_read_costs)
@@ -825,7 +733,8 @@ def optimize_d(
         path_to_read_costs=path_to_read_costs
     )
 
-    # Add boolean indicators which imply that a path has been used (assigned any read)
+    # # Add boolean indicators which imply that a path has been used (assigned any read)
+    # # ONLY used for tracking purposes later..TODO remove this
     # for path_id in paths.ids():
     #     vars.path[path_id] = model.NewBoolVar("p" + str(path_id))
     #
@@ -870,6 +779,9 @@ def optimize_d(
 
     o.cancel_timer_thread()
 
+    # Instead of explicitly modeling n, infer it at the end to save complexity during optimization
+    solution.cost_n = solution.infer_n(solver=solver, path_to_read_costs=path_to_read_costs, paths=paths, reads=reads)
+
     return solution
 
 
@@ -877,7 +789,8 @@ def optimize_d_plus_n(
         path_to_read_costs,
         reads: IncrementalIdMap,
         samples: IncrementalIdMap,
-        cost_norm_factor: float,
+        d_coeff: float,
+        n_coeff: float,
         paths: Paths,
         sample_to_reads: dict,
         output_dir: str,
@@ -885,7 +798,7 @@ def optimize_d_plus_n(
 
     output_subdir = os.path.join(output_dir, "optimizer")
 
-    # First optimize for unconstrained cost first, and fetch the corresponding n value
+    # First optimize for unconstrained cost first, and fetch the corresponding n and d value
     vars = Variables()
     model = cp_model.CpModel()
 
@@ -899,19 +812,19 @@ def optimize_d_plus_n(
     )
 
     # Add boolean indicators which imply that a path has been used (assigned any read)
-    # for path_id in paths.ids():
-    #     vars.path[path_id] = model.NewBoolVar("p" + str(path_id))
-    #
-    #     # Accumulate all possible assignments of this path to any reads
-    #     v = [vars.path_to_read[(path_id,read_id)] for read_id in reads.ids() if (path_id,read_id) in path_to_read_costs]
-    #     s = sum(v)
-    #
-    #     if len(v) == 0:
-    #         print("WARNING: skipping path id %d because has no viable path assignments" % path_id)
-    #         continue
-    #
-    #     model.Add(s >= 1).OnlyEnforceIf(vars.path[path_id])
-    #     model.Add(s == 0).OnlyEnforceIf(vars.path[path_id].Not())
+    for path_id in paths.ids():
+        vars.path[path_id] = model.NewBoolVar("p" + str(path_id))
+
+        # Accumulate all possible assignments of this path to any reads
+        v = [vars.path_to_read[(path_id,read_id)] for read_id in reads.ids() if (path_id,read_id) in path_to_read_costs]
+        s = sum(v)
+
+        if len(v) == 0:
+            print("WARNING: skipping path id %d because has no viable path assignments" % path_id)
+            continue
+
+        model.Add(s >= 1).OnlyEnforceIf(vars.path[path_id])
+        model.Add(s == 0).OnlyEnforceIf(vars.path[path_id].Not())
 
     # Cost term a: sum of edit distances for all reads assigned to haplotypes
     vars.cost_d = model.NewIntVar(0, 100_000_000, "cost_d")
@@ -928,7 +841,7 @@ def optimize_d_plus_n(
 
     status = None
 
-    model.Minimize(vars.cost_d + cost_norm_factor*vars.cost_n)
+    model.Minimize(d_coeff*vars.cost_d + n_coeff*vars.cost_n)
 
     # It's critical to STOP THE TIMER after this finishes because it relies on a thread which will run on
     # past the solution for as long as the timer is set, potentially starving future iterations of threads.
@@ -968,15 +881,25 @@ def optimize_with_d_norm(
         output_dir=output_dir,
         n_threads=n_threads)
 
-    # Multiply the n cost by a factor which attempts to balance the two objectives
-    norm_factor = min_d_solution.cost_d/len(reads)
+    # Multiply each factor in the cost function by the other factor's normalization constant to attempt to equalize them
+    n_coeff = min_d_solution.cost_d
+    d_coeff = min_d_solution.cost_n*8
+
+    print("---")
+    print("---")
+    print("---")
+    print("Using n=%d and d=%d" % (min_d_solution.cost_n, min_d_solution.cost_d))
+    print("---")
+    print("---")
+    print("---")
 
     solution = optimize_d_plus_n(
         path_to_read_costs=path_to_read_costs,
         reads=reads,
         samples=samples,
         paths=paths,
-        cost_norm_factor=norm_factor,
+        d_coeff=d_coeff,
+        n_coeff=n_coeff,
         sample_to_reads=sample_to_reads,
         output_dir=output_dir,
         n_threads=n_threads)
@@ -1214,49 +1137,6 @@ def get_reads_from_bam(output_path, bam_path, token):
             return False
 
     return output_path
-
-
-def run_minigraph(output_directory, gfa_path, fasta_path):
-    output_path = os.path.join(output_directory, "reads_vs_graph.gaf")
-
-    # minigraph \
-    # -cx lr \
-    # -o reads_vs_graph.gaf \
-    # graph.gfa \
-    # reads.fasta \
-    # args = ["minigraph", "-c", "-x", "lr", "-o", output_path, gfa_path, fasta_path]
-
-    args = [
-        "minigraph",
-        "-c",
-        "-g", str(10000),
-        "-k", str(14),
-        "-f", "0.25",
-        "-r", "1000,20000",
-        "-n", "3,3",
-        "-p", str(0.5),
-        "-j", str(0.5),
-        "-x", "lr",
-        "-o", output_path,
-        gfa_path,
-        fasta_path]
-
-    with open(output_path, 'a') as file:
-        sys.stderr.write(" ".join(args)+'\n')
-
-        try:
-            p1 = subprocess.run(args, stdout=file, check=True, stderr=subprocess.PIPE)
-
-        except subprocess.CalledProcessError as e:
-            sys.stderr.write("Status : FAIL " + '\n' + (e.stderr.decode("utf8") if e.stderr is not None else "") + '\n')
-            sys.stderr.flush()
-            return False
-        except Exception as e:
-            sys.stderr.write(str(e))
-            return False
-
-    return output_path
-
 
 def path_recursion(graph, alleles, id, path_sequence=None):
     if path_sequence is None:
@@ -1680,7 +1560,7 @@ def infer_haplotypes(
         sample_color=sample_color,
         output_path=plot_path)
 
-    output_fasta_path = os.path.join(output_directory, "reads.fasta")
+    read_fasta_path = os.path.join(output_directory, "reads.fasta")
 
     # sample --> [read_name_0,read_name_1,...]
     sample_to_reads = defaultdict(list)
@@ -1706,7 +1586,7 @@ def infer_haplotypes(
 
         # This repeatedly appends one FASTA file
         get_reads_from_bam(
-            output_path=output_fasta_path,
+            output_path=read_fasta_path,
             bam_path=region_bam_path,
             token=tokenator)
 
@@ -1718,7 +1598,7 @@ def infer_haplotypes(
     output_gaf_path = run_minigraph(
         output_directory=output_directory,
         gfa_path=output_gfa_path,
-        fasta_path=output_fasta_path)
+        fasta_path=read_fasta_path)
 
     b = time.time()
     time_elapsed_minigraph = b - a
@@ -1765,13 +1645,35 @@ def infer_haplotypes(
 
     a = time.time()
 
-    # Do an exhaustive all-vs-all alignment of reads to each linearized path to get scores for the optimizer
-    # TODO: filter the alignments before even reaching this step? Wasteful to align all-vs-all
+    # mashmap_output_path = run_mashmap(
+    #     ref_fasta_paths=fasta_paths,
+    #     reads_fasta_path=read_fasta_path,
+    #     n_threads=n_threads,
+    #     output_directory=output_directory,
+    #     filename_prefix="reads_vs_ref_mashmap"
+    # )
+    #
+    # with open(mashmap_output_path, 'r') as file:
+    #     for l,line in enumerate(file):
+    #         tokens = line.strip().split()
+    #
+    #         query_name = tokens[0]
+    #         ref_name = tokens[5]
+    #         identity = 0
+    #
+    #         for token in tokens[12:]:
+    #             if token.startswith("id:f:"):
+    #                 identity = token[5:]
+    #                 print(query_name, ref_name, token, identity)
+    #                 break
+    #
+    # exit()
+
     bam_paths = list()
     for p,path in enumerate(fasta_paths):
         bam_path = run_minimap2(
             ref_fasta_path=path,
-            reads_fasta_path=output_fasta_path,
+            reads_fasta_path=read_fasta_path,
             preset="map-hifi",
             n_threads=n_threads,
             n_sort_threads=n_sort_threads,
@@ -1912,7 +1814,7 @@ def infer_haplotypes(
     #     output_directory=output_directory
     # )
 
-    solution = optimize_n(
+    solution = optimize_with_d_norm(
         path_to_read_costs=path_to_read_costs,
         reads=read_id_map,
         samples=sample_id_map,
