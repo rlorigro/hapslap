@@ -5,6 +5,7 @@ from modules.Cigar import iterate_cigar,cigar_index_to_char,is_ref_move
 from modules.IterativeHistogram import IterativeHistogram
 from modules.IncrementalIdMap import IncrementalIdMap
 from modules.Bam import get_region_from_bam
+from modules.Sequence import iterate_fasta
 from modules.Bed import parse_bed_regions
 from modules.Vcf import vcf_to_graph
 from modules.Authenticator import *
@@ -568,11 +569,11 @@ def find_all_pareto_solutions(
         model.Add(s == 0).OnlyEnforceIf(vars.path[path_id].Not())
 
     # Cost term a: sum of edit distances for all reads assigned to haplotypes
-    vars.cost_d = model.NewIntVar(0, 100_000_000, "cost_d")
+    vars.cost_d = model.NewIntVar(0, 10_000_000_000, "cost_d")
     model.Add(vars.cost_d == sum([c * vars.path_to_read[e] for e,c in path_to_read_costs.items()]))
 
     # Cost term b: sum of unique haplotypes used
-    vars.cost_n = model.NewIntVar(0, 100_000_000, "cost_n")
+    vars.cost_n = model.NewIntVar(0, 10_000_000_000, "cost_n")
     model.Add(vars.cost_n == sum([x for x in vars.path.values()]))
 
     # n diploid samples can at most fill n*2 haplotypes
@@ -677,7 +678,7 @@ def optimize_n(
         model.Add(s == 0).OnlyEnforceIf(vars.path[path_id].Not())
 
     # Cost term n: sum of unique haplotypes used
-    vars.cost_n = model.NewIntVar(0, 100_000_000, "cost_n")
+    vars.cost_n = model.NewIntVar(0, 10_000_000_000, "cost_n")
     model.Add(vars.cost_n == sum([x for x in vars.path.values()]))
 
     vars.validate(sample_id_to_read_ids=sample_to_reads, sample_id_map=samples, path_to_read_costs=path_to_read_costs)
@@ -750,7 +751,7 @@ def optimize_d(
     #     model.Add(s == 0).OnlyEnforceIf(vars.path[path_id].Not())
 
     # Cost term d: sum of edit distances for all reads assigned to haplotypes
-    vars.cost_d = model.NewIntVar(0, 100_000_000, "cost_d")
+    vars.cost_d = model.NewIntVar(0, 10_000_000_000, "cost_d")
     model.Add(vars.cost_d == sum([c * vars.path_to_read[e] for e,c in path_to_read_costs.items()]))
 
     vars.validate(sample_id_to_read_ids=sample_to_reads, sample_id_map=samples, path_to_read_costs=path_to_read_costs)
@@ -827,11 +828,11 @@ def optimize_d_plus_n(
         model.Add(s == 0).OnlyEnforceIf(vars.path[path_id].Not())
 
     # Cost term a: sum of edit distances for all reads assigned to haplotypes
-    vars.cost_d = model.NewIntVar(0, 100_000_000, "cost_d")
+    vars.cost_d = model.NewIntVar(0, 10_000_000_000, "cost_d")
     model.Add(vars.cost_d == sum([c * vars.path_to_read[e] for e,c in path_to_read_costs.items()]))
 
     # Cost term b: sum of unique haplotypes used
-    vars.cost_n = model.NewIntVar(0, 100_000_000, "cost_n")
+    vars.cost_n = model.NewIntVar(0, 10_000_000_000, "cost_n")
     model.Add(vars.cost_n == sum([x for x in vars.path.values()]))
 
     vars.validate(sample_id_to_read_ids=sample_to_reads, sample_id_map=samples, path_to_read_costs=path_to_read_costs)
@@ -872,26 +873,29 @@ def optimize_with_d_norm(
         output_dir: str,
         n_threads: int = 1):
 
-    min_d_solution = optimize_d(
+    # Initially we only want n to be a tie-breaker between equally optimal min(d) solutions
+    n_coeff = 1
+    d_coeff = len(paths)*10
+
+    min_d_solution = optimize_d_plus_n(
         path_to_read_costs=path_to_read_costs,
         reads=reads,
         samples=samples,
         paths=paths,
+        d_coeff=d_coeff,
+        n_coeff=n_coeff,
         sample_to_reads=sample_to_reads,
         output_dir=output_dir,
         n_threads=n_threads)
 
     # Multiply each factor in the cost function by the other factor's normalization constant to attempt to equalize them
+    # Then add an arbitrary additional term to weight the solution
     n_coeff = min_d_solution.cost_d
-    d_coeff = min_d_solution.cost_n*8
+    d_coeff = min_d_solution.cost_n*6
 
-    print("---")
-    print("---")
-    print("---")
+    print("\n---")
     print("Using n=%d and d=%d" % (min_d_solution.cost_n, min_d_solution.cost_d))
-    print("---")
-    print("---")
-    print("---")
+    print("---\n")
 
     solution = optimize_d_plus_n(
         path_to_read_costs=path_to_read_costs,
@@ -1649,38 +1653,45 @@ def infer_haplotypes(
     #     ref_fasta_paths=fasta_paths,
     #     reads_fasta_path=read_fasta_path,
     #     n_threads=n_threads,
+    #     min_identity=0.5,
     #     output_directory=output_directory,
     #     filename_prefix="reads_vs_ref_mashmap"
     # )
     #
+    # reads_per_path = defaultdict(set)
     # with open(mashmap_output_path, 'r') as file:
     #     for l,line in enumerate(file):
     #         tokens = line.strip().split()
     #
     #         query_name = tokens[0]
-    #         ref_name = tokens[5]
-    #         identity = 0
+    #         path_name = tokens[5]
+    #         path_id = paths.get_path_id(path_name)
+    #         reads_per_path[path_id].add(query_name)
     #
-    #         for token in tokens[12:]:
-    #             if token.startswith("id:f:"):
-    #                 identity = token[5:]
-    #                 print(query_name, ref_name, token, identity)
-    #                 break
-    #
-    # exit()
+
+    read_subset = set()
+    sequences = list()
+    for sequence in iterate_fasta(read_fasta_path):
+        sequences.append(sequence)
+        read_subset.add(sequence.name)
 
     bam_paths = list()
+    # for path_id,read_subset in reads_per_path.items():
     for p,path in enumerate(fasta_paths):
-        bam_path = run_minimap2(
+        # path_path = os.path.join(path_subdirectory, str(path_id) + ".fasta")
+
+        bam_path = run_minimap2_on_read_subset(
             ref_fasta_path=path,
-            reads_fasta_path=read_fasta_path,
+            reads=sequences,
+            read_names=read_subset,
             preset="map-hifi",
             n_threads=n_threads,
-            n_sort_threads=n_sort_threads,
             output_directory=path_subdirectory,
             filename_prefix=str(p))
 
         bam_paths.append(bam_path)
+
+    del sequences
 
     b = time.time()
 

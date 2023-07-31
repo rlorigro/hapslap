@@ -119,7 +119,7 @@ def run_minigraph(output_directory, gfa_path, fasta_path):
         "-r", "1000,20000",
         "-n", "3,3",
         "-p", str(0.5),
-        "-j", str(0.5),
+        # "-j", str(0.85),  # <-- this alone causes horrific slowdown in some regions, no idea why
         "-x", "lr",
         "-o", output_path,
         gfa_path,
@@ -197,14 +197,10 @@ def run_minimap2_on_read_subset(
     fasta_input_string = list()
 
     for sequence in reads:
-        print(sequence.name)
         if sequence.name in read_names:
-            print("pass")
             fasta_input_string.append(">%s\n%s\n" % (sequence.name, sequence.sequence))
 
     fasta_input_string = ''.join(fasta_input_string)
-
-    print(len(fasta_input_string))
 
     sys.stderr.write("WRITING: %s\n" % output_path)
     with open(output_path, 'w') as file:
@@ -223,34 +219,41 @@ def run_minimap2_on_read_subset(
     return output_path
 
 
-def run_mashmap(ref_fasta_paths: list, reads_fasta_path, n_threads, output_directory, filename_prefix="reads_vs_ref_mash"):
+def run_mashmap(ref_fasta_paths: list, reads_fasta_path, min_identity, n_threads, output_directory, filename_prefix="reads_vs_ref_mash"):
     output_filename = os.path.join(output_directory, filename_prefix + ".paf")
     output_path = os.path.join(output_directory,output_filename)
+
+    temp_file_path = os.path.join(output_directory, "refs.txt")
+    with open(temp_file_path, 'w') as temp_file:
+        for path in ref_fasta_paths:
+            print(path)
+            temp_file.write(path)
+            temp_file.write('\n')
 
     # mashmap --rl paths/ref_paths.txt -q reads.fasta --dense -s 500 --pi 70 -t 30
     mashmap_args = [
         "mashmap",
-        "--rl", ref_fasta_paths,
+        "--rl", temp_file_path,
         "-q", reads_fasta_path,
         "--dense",
-        "-s", 500,
-        "--pi", 70,
-        "-t", n_threads
+        "-s", str(500),
+        "--pi", str(int(round(min_identity*100))),
+        "-t", str(n_threads),
+        "-o", output_path
     ]
 
-    with open(output_path, 'a') as file:
-        sys.stderr.write(" ".join(mashmap_args)+'\n')
+    sys.stderr.write(" ".join(mashmap_args)+'\n')
 
-        try:
-            p1 = subprocess.run(mashmap_args, stdout=file, check=True, stderr=subprocess.PIPE)
+    try:
+        p1 = subprocess.run(mashmap_args, check=True, stderr=subprocess.PIPE)
 
-        except subprocess.CalledProcessError as e:
-            sys.stderr.write("Status : FAIL " + '\n' + (e.stderr.decode("utf8") if e.stderr is not None else "") + '\n')
-            sys.stderr.flush()
-            return False
-        except Exception as e:
-            sys.stderr.write(str(e))
-            return False
+    except subprocess.CalledProcessError as e:
+        sys.stderr.write("Status : FAIL " + '\n' + (e.stderr.decode("utf8") if e.stderr is not None else "") + '\n')
+        sys.stderr.flush()
+        raise e
+    except Exception as e:
+        sys.stderr.write(str(e))
+        raise e
 
     return output_path
 

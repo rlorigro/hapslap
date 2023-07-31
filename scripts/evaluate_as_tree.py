@@ -303,6 +303,7 @@ def evaluate_test_haplotypes(
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
+    # TODO: have some measure of total distance, and redundancy
     summary = dict()
 
     summary_path = os.path.join(output_dir, "summary.csv")
