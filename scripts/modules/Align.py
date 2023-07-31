@@ -1,5 +1,4 @@
 from pywfa import WavefrontAligner
-import mappy
 import time
 import sys
 
