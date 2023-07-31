@@ -1571,16 +1571,20 @@ def infer_haplotypes(
     read_id_map = IncrementalIdMap()
 
     # Extract all the relevant reads from the ref genome alignment
+    args = list()
+    sample_list = list()
     for sample_name,data in data_per_sample.items():
         bam_path = data["bam"]
         print("bam_path:", bam_path)
 
-        region_bam_path = get_region_from_bam(
-            output_directory=output_directory,
-            bam_path=bam_path,
-            region_string=region_string,
-            tokenator=tokenator)
+        sample_list.append(sample_name)
+        args.append([output_directory,bam_path,region_string,tokenator])
 
+    regional_bams = None
+    with Pool(n_threads) as pool:
+        regional_bams = pool.starmap(get_region_from_bam, args)
+
+    for region_bam_path, sample_name in zip(regional_bams,sample_list):
         read_names = get_read_names_from_bam(region_bam_path)
 
         for read_name in read_names:
@@ -1595,6 +1599,8 @@ def infer_haplotypes(
             token=tokenator)
 
         os.remove(region_bam_path)
+
+    del sample_list
 
     a = time.time()
 

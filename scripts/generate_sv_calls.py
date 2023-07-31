@@ -8,7 +8,7 @@ import argparse
 import re
 
 
-def run_sniffles(ref_path, output_dir, bam_path, n_threads, other_args=None, timeout=60*60):
+def run_sniffles(ref_path, output_dir, bam_path, n_threads, other_args=None, bed_path=None, timeout=60*60):
     output_filename = os.path.basename(bam_path).replace(".bam", "_sniffles.vcf")
     output_path = os.path.join(output_dir, output_filename)
 
@@ -32,8 +32,12 @@ def run_sniffles(ref_path, output_dir, bam_path, n_threads, other_args=None, tim
         "--output-rnames"
     ]
 
+    if bed_path is not None:
+        args.append("--tandem-repeats")
+        args.append(bed_path)
+
     if other_args is not None:
-        # Allow overwrite is always activated, so don't let it be part of the arguments twice if the users specifies it
+        # Allow overwrite is always activated, so don't let it be part of the arguments twice
         other_args = other_args.replace("--allow-overwrite", "")
         args.extend(other_args.strip().split(' '))
 

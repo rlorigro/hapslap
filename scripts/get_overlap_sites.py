@@ -45,8 +45,6 @@ def get_overlap_sites(output_dir, region_string, vcfs_per_sample, bed_path, bed_
                 start = record.affected_start
                 stop = record.affected_end
 
-                print(chromosome, start, stop)
-
                 if 'END' in record.INFO:
                     stop = record.sv_end
 

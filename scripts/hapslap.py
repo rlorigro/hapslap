@@ -62,14 +62,16 @@ def generate_sv_calls(
         ref_path,
         n_threads,
         output_directory,
-        other_args):
+        other_args,
+        bed_path=None
+    ):
 
     output_subdirectory = os.path.join(output_directory, "vcfs")
 
     vcf_paths_per_sample = dict()
     for sample,path in bams_per_sample.items():
         # TODO: add tandem bed path argument for sniffles
-        vcf_path = run_sniffles(ref_path=ref_path, output_dir=output_subdirectory, bam_path=path, n_threads=n_threads, other_args=other_args)
+        vcf_path = run_sniffles(ref_path=ref_path, output_dir=output_subdirectory, bam_path=path, n_threads=n_threads, bed_path=bed_path, other_args=other_args)
         indexed_vcf_path = compress_and_index_vcf(vcf_path=vcf_path)
         vcf_paths_per_sample[sample] = indexed_vcf_path
 
@@ -83,7 +85,7 @@ def run_hapslap(
         ref_path,
         bed_path,
         region_string,
-        interval_bed_path,
+        tandem_bed_path,
         interval_padding,
         interval_max_length,
         sv_caller_args,
@@ -116,7 +118,8 @@ def run_hapslap(
         ref_path=ref_path,
         n_threads=n_threads,
         output_directory=output_directory,
-        other_args=sv_caller_args
+        other_args=sv_caller_args,
+        bed_path=tandem_bed_path
     )
 
     data_per_sample = defaultdict(dict)
@@ -125,12 +128,13 @@ def run_hapslap(
         data_per_sample[sample]["bam"] = bams_per_sample[sample]
 
     # Generate windows from scratch if no BED is provided. Only valid within the provided region string
-    if bed_path is not None:
+    if bed_path is None:
+        sys.stderr.write("No windows provided, generating from scratch...\n")
         bed_path = get_overlap_sites(
             output_dir=output_directory,
             region_string=region_string,
             vcfs_per_sample=vcfs_per_sample,
-            bed_path=interval_bed_path,
+            bed_path=tandem_bed_path,
             bed_name="tandems",
             padding=interval_padding,
             max_interval_length=interval_max_length)
@@ -166,7 +170,7 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--annotation",
+        "--tandem_bed",
         required=False,
         default=None,
         type=str,
@@ -292,7 +296,7 @@ if __name__ == "__main__":
         output_directory=args.output_dir,
         cache_directory=args.cache_dir,
         region_string=args.region,
-        interval_bed_path=args.annotation,
+        tandem_bed_path=args.tandem_bed,
         interval_padding=args.interval_padding,
         interval_max_length=args.interval_max_length,
         sv_caller_args=args.sv_caller_args,
