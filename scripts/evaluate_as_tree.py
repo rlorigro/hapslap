@@ -9,7 +9,6 @@ from collections import defaultdict
 from multiprocessing import Pool
 from copy import copy, deepcopy
 from pathlib import Path
-from glob import glob
 import argparse
 import hashlib
 import numpy
@@ -274,6 +273,73 @@ def get_min_distance_per_sample(pairs, distances):
     return min_distances
 
 
+class TreevaluationSummary():
+    def __init__(self, chromosome=None, start=None, stop=None, n_haps=None, distance_per_sample=None, ref_length_per_sample=None, file_path=None):
+
+        if all([x is not None for x in [chromosome, start, stop, n_haps, distance_per_sample, ref_length_per_sample]]):
+            if file_path is not None:
+                raise Exception("ERROR: cannot initialize with both a file path and explicit data")
+
+            self.chromosome = chromosome
+            self.start = start
+            self.stop = stop
+            self.n_haps = n_haps
+            self.distance_per_sample = distance_per_sample
+            self.ref_length_per_sample = ref_length_per_sample
+
+        elif file_path is not None:
+            self.read_from_file(file_path)
+
+        else:
+            raise Exception("ERROR: cannot initialize with incomplete variables")
+
+    def __str__(self):
+        s = list()
+        s.append("chromosome," + self.chromosome)
+        s.append("start," + str(self.start))
+        s.append("stop," + str(self.stop))
+        s.append("n_haps," + str(self.n_haps))
+
+        samples = [x for x in self.distance_per_sample.keys()]
+        s.append("sample_names," + ' '.join(samples))
+        s.append("distances," + ' '.join([str(self.distance_per_sample[x]) for x in samples]))
+        s.append("ref_lengths," + ' '.join([str(self.ref_length_per_sample[x]) for x in samples]))
+
+        return '\n'.join(s) + '\n'
+
+    def write_to_file(self, output_path):
+        with open(output_path, 'w') as file:
+            file.write(str(self))
+
+    def read_from_file(self, summary_path):
+        with open(summary_path, 'r') as file:
+            sample_names = None
+            distances = None
+            ref_lengths = None
+
+            for line in file:
+                tokens = line.strip().split(',')
+                key = tokens[0]
+
+                if key == "chromosome":
+                    self.chromosome = tokens[1]
+                if key == "start":
+                    self.start = int(tokens[1])
+                if key == "stop":
+                    self.stop = int(tokens[1])
+                if key == "n_haps":
+                    self.n_haps = int(tokens[1])
+                if key == "sample_names":
+                    sample_names = tokens[1].split(' ')
+                if key == "distances":
+                    distances = list(map(int,tokens[1].split(' ')))
+                if key == "ref_lengths":
+                    ref_lengths = list(map(int,tokens[1].split(' ')))
+
+            self.distance_per_sample = {x:y for x,y in zip(sample_names,distances)}
+            self.ref_length_per_sample = {x:y for x,y in zip(sample_names,ref_lengths)}
+
+
 def evaluate_test_haplotypes(
         input_dir,
         cache_dir,
@@ -302,10 +368,6 @@ def evaluate_test_haplotypes(
 
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-
-    # TODO: have some measure of total distance, and redundancy
-    summary = dict()
-    summary_path = os.path.join(output_dir, "summary.csv")
 
     for test_dir in test_dirs:
         print("Evaluating: " + test_dir)
@@ -506,8 +568,11 @@ def evaluate_test_haplotypes(
         x_margin = x_min - 0.05 * x_width
         y_margin = y_min - 0.06 * y_width
 
+        distance_per_sample = dict()
+
         # Label/color the tree nodes based on classification of the model w.r.t. available haplotypes, and label
         # distances in the leaves
+        # Also: compute the total distance to the leaves of the tree
         labels = dict()
         sizes = list()
         colors = list()
@@ -558,6 +623,7 @@ def evaluate_test_haplotypes(
             if tier == last_tier:
                 axes.text(pos[n][0], pos[n][1], str(d_min) + ' ', fontsize=7, ha="center", va="top", rotation=90)
                 axes.text(pos[n][0], y_margin, labels[n], fontsize=7, ha="center", va="top", rotation=90)
+                distance_per_sample[values["label"]] = d_min
 
         sys.stderr.write("Computing layout and plotting...\n")
 
@@ -582,6 +648,19 @@ def evaluate_test_haplotypes(
         fig.set_size_inches(12,6)
         pyplot.savefig(figure_output_path, dpi=300)
         pyplot.close()
+
+        ref_length_per_sample = {x:len(ref_sequences[x]) for x in ref_sequences.keys()}
+        summary = TreevaluationSummary(
+            chromosome=chromosome,
+            start=start,
+            stop=stop,
+            n_haps=len(test_sequences),
+            distance_per_sample=distance_per_sample,
+            ref_length_per_sample=ref_length_per_sample
+        )
+
+        summary_path = os.path.join(output_dir, prefix + "_summary.csv")
+        summary.write_to_file(summary_path)
 
     return
 
