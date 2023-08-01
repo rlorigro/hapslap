@@ -305,7 +305,6 @@ def evaluate_test_haplotypes(
 
     # TODO: have some measure of total distance, and redundancy
     summary = dict()
-
     summary_path = os.path.join(output_dir, "summary.csv")
 
     for test_dir in test_dirs:
@@ -333,9 +332,6 @@ def evaluate_test_haplotypes(
         stop = config["ref_stop"]
 
         prefix = chromosome + "_" + str(start) + "-" + str(stop)
-        # output_subdirectory = os.path.join(output_dir, prefix)
-        # if not os.path.exists(output_subdirectory):
-        #     os.makedirs(output_subdirectory)
 
         id_map = IncrementalIdMap()
 
@@ -361,7 +357,6 @@ def evaluate_test_haplotypes(
 
         ref_sequences = {x.name:x for x in results if x is not None}
         test_sequences = {x.name:x for x in iterate_fasta(test_path, force_upper_case=True, normalize_name=True)}
-
 
         print("before pruning sequences: " + str(len(test_sequences)))
         # Remove duplicate sequences from test_sequences
@@ -405,6 +400,10 @@ def evaluate_test_haplotypes(
         tree_id_map = IncrementalIdMap()
 
         distances = list()
+
+        # ---
+        # Construct the tree by iteratively ratcheting down the min distance of the edges in a connected component
+        # ---
 
         # Initialize the root component with all nodes
         root_component = {x for x in ref_graph.nodes}
@@ -461,6 +460,7 @@ def evaluate_test_haplotypes(
                 prev_component_map = component_map
 
         sys.stderr.write("Aligning test haps to ref haps...\n")
+
         # Align test_sequences to the refs (to tag nodes in the tree)
         test_pairs,test_lengths,test_distances = align_sequences_to_other_sequences(ref_sequences, test_sequences, n_threads)
 
@@ -477,6 +477,7 @@ def evaluate_test_haplotypes(
         fig = pyplot.figure()
         axes = pyplot.axes()
 
+        # Iterate the nodes and collect some plotting info regarding the bounds of the tree and its tiers
         x_min = sys.maxsize
         y_min = sys.maxsize
         x_max = -sys.maxsize
@@ -505,6 +506,8 @@ def evaluate_test_haplotypes(
         x_margin = x_min - 0.05 * x_width
         y_margin = y_min - 0.06 * y_width
 
+        # Label/color the tree nodes based on classification of the model w.r.t. available haplotypes, and label
+        # distances in the leaves
         labels = dict()
         sizes = list()
         colors = list()
@@ -558,6 +561,7 @@ def evaluate_test_haplotypes(
 
         sys.stderr.write("Computing layout and plotting...\n")
 
+        # Draw dashed lines for tiers
         for t,data in tier_data.items():
             y = data["y"]
             d = data["d"]
@@ -577,8 +581,6 @@ def evaluate_test_haplotypes(
         figure_output_path = os.path.join(output_dir, prefix + "_tree.png")
         fig.set_size_inches(12,6)
         pyplot.savefig(figure_output_path, dpi=300)
-
-        # pyplot.show()
         pyplot.close()
 
     return
