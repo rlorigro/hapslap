@@ -274,9 +274,17 @@ def get_min_distance_per_sample(pairs, distances):
 
 
 class TreevaluationSummary():
-    def __init__(self, chromosome=None, start=None, stop=None, n_haps=None, distance_per_sample=None, ref_length_per_sample=None, file_path=None):
+    def __init__(self,
+                 chromosome=None,
+                 start=None,
+                 stop=None,
+                 n_haps=None,
+                 test_distance_per_sample=None,
+                 input_distance_per_sample=None,
+                 ref_length_per_sample=None,
+                 file_path=None):
 
-        if all([x is not None for x in [chromosome, start, stop, n_haps, distance_per_sample, ref_length_per_sample]]):
+        if all([x is not None for x in [chromosome, start, stop, n_haps, test_distance_per_sample, input_distance_per_sample, ref_length_per_sample]]):
             if file_path is not None:
                 raise Exception("ERROR: cannot initialize with both a file path and explicit data")
 
@@ -284,7 +292,8 @@ class TreevaluationSummary():
             self.start = start
             self.stop = stop
             self.n_haps = n_haps
-            self.distance_per_sample = distance_per_sample
+            self.test_distance_per_sample = test_distance_per_sample
+            self.input_distance_per_sample = input_distance_per_sample
             self.ref_length_per_sample = ref_length_per_sample
 
         elif file_path is not None:
@@ -300,9 +309,10 @@ class TreevaluationSummary():
         s.append("stop," + str(self.stop))
         s.append("n_haps," + str(self.n_haps))
 
-        samples = [x for x in self.distance_per_sample.keys()]
+        samples = [x for x in self.ref_length_per_sample.keys()]
         s.append("sample_names," + ' '.join(samples))
-        s.append("distances," + ' '.join([str(self.distance_per_sample[x]) for x in samples]))
+        s.append("input_distances," + ' '.join([str(self.input_distance_per_sample[x]) for x in samples]))
+        s.append("test_distances," + ' '.join([str(self.test_distance_per_sample[x]) for x in samples]))
         s.append("ref_lengths," + ' '.join([str(self.ref_length_per_sample[x]) for x in samples]))
 
         return '\n'.join(s) + '\n'
@@ -331,12 +341,15 @@ class TreevaluationSummary():
                     self.n_haps = int(tokens[1])
                 if key == "sample_names":
                     sample_names = tokens[1].split(' ')
-                if key == "distances":
-                    distances = list(map(int,tokens[1].split(' ')))
+                if key == "input_distances":
+                    input_distances = list(map(int,tokens[1].split(' ')))
+                if key == "test_distances":
+                    test_distances = list(map(int,tokens[1].split(' ')))
                 if key == "ref_lengths":
                     ref_lengths = list(map(int,tokens[1].split(' ')))
 
-            self.distance_per_sample = {x:y for x,y in zip(sample_names,distances)}
+            self.input_distance_per_sample = {x:y for x,y in zip(sample_names,input_distances)}
+            self.test_distance_per_sample = {x:y for x,y in zip(sample_names,test_distances)}
             self.ref_length_per_sample = {x:y for x,y in zip(sample_names,ref_lengths)}
 
 
@@ -568,7 +581,8 @@ def evaluate_test_haplotypes(
         x_margin = x_min - 0.05 * x_width
         y_margin = y_min - 0.06 * y_width
 
-        distance_per_sample = dict()
+        test_distance_per_sample = dict()
+        input_distance_per_sample = dict()
 
         # Label/color the tree nodes based on classification of the model w.r.t. available haplotypes, and label
         # distances in the leaves
@@ -592,7 +606,8 @@ def evaluate_test_haplotypes(
 
             covered_by_test = False
             covered_by_input = False
-            d_min = sys.maxsize
+            d_min_test = sys.maxsize
+            d_min_input = sys.maxsize
             for sample in samples:
                 d_test = ref_to_test_min_distances[sample]
                 d_input = ref_to_input_min_distances[sample]
@@ -603,8 +618,11 @@ def evaluate_test_haplotypes(
                 if d_input <= distance:
                     covered_by_input = True
 
-                if d_test < d_min:
-                    d_min = d_test
+                if d_test < d_min_test:
+                    d_min_test = d_test
+
+                if d_input < d_min_input:
+                    d_min_input = d_input
 
             false_negative = covered_by_input and not covered_by_test
             false_positive = not covered_by_input and covered_by_test
@@ -621,9 +639,10 @@ def evaluate_test_haplotypes(
                 colors.append("C0")
 
             if tier == last_tier:
-                axes.text(pos[n][0], pos[n][1], str(d_min) + ' ', fontsize=7, ha="center", va="top", rotation=90)
+                axes.text(pos[n][0], pos[n][1], str(d_min_test) + ' ', fontsize=7, ha="center", va="top", rotation=90)
                 axes.text(pos[n][0], y_margin, labels[n], fontsize=7, ha="center", va="top", rotation=90)
-                distance_per_sample[values["label"]] = d_min
+                test_distance_per_sample[values["label"]] = d_min_test
+                input_distance_per_sample[values["label"]] = d_min_input
 
         sys.stderr.write("Computing layout and plotting...\n")
 
@@ -655,7 +674,8 @@ def evaluate_test_haplotypes(
             start=start,
             stop=stop,
             n_haps=len(test_sequences),
-            distance_per_sample=distance_per_sample,
+            input_distance_per_sample=input_distance_per_sample,
+            test_distance_per_sample=test_distance_per_sample,
             ref_length_per_sample=ref_length_per_sample
         )
 
