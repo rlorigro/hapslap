@@ -8,7 +8,6 @@ from modules.Bam import download_regions_of_bam
 from itertools import combinations
 from multiprocessing import Pool
 from pathlib import Path
-from glob import glob
 import argparse
 import hashlib
 import numpy

@@ -1,4 +1,5 @@
 from modules.Bam import download_regions_of_bam, index_bam
+from modules.Vcf import compress_and_index_vcf
 from modules.Authenticator import *
 from modules.GsUri import *
 
@@ -59,51 +60,6 @@ def run_sniffles(ref_path, output_dir, bam_path, n_threads, other_args=None, bed
     return output_path
 
 
-def compress_and_index_vcf(vcf_path, timeout=60*3):
-    output_vcf_path = vcf_path + ".gz"
-    output_tbi_path = output_vcf_path + ".tbi"
-
-    # Enable caching by path name
-    if os.path.exists(output_vcf_path) and os.path.exists(output_tbi_path):
-        return output_vcf_path
-
-    args = ["bgzip", vcf_path]
-
-    sys.stderr.write(" ".join(args)+'\n')
-
-    try:
-        p1 = subprocess.run(args, check=True, stderr=subprocess.PIPE, timeout=timeout)
-
-    except subprocess.CalledProcessError as e:
-        sys.stderr.write("Status: FAIL " + '\n' + (e.stderr.decode("utf8") if e.stderr is not None else "") + '\n')
-        sys.stderr.flush()
-        return None
-
-    except subprocess.TimeoutExpired as e:
-        sys.stderr.write("Status: FAIL due to timeout " + '\n' + (e.stderr.decode("utf8") if e.stderr is not None else "") + '\n')
-        sys.stderr.flush()
-        return None
-
-    args = ["tabix", "-p", "vcf", output_vcf_path]
-
-    sys.stderr.write(" ".join(args)+'\n')
-
-    try:
-        p1 = subprocess.run(args, check=True, stderr=subprocess.PIPE, timeout=timeout)
-
-    except subprocess.CalledProcessError as e:
-        sys.stderr.write("Status: FAIL " + '\n' + (e.stderr.decode("utf8") if e.stderr is not None else "") + '\n')
-        sys.stderr.flush()
-        return None
-
-    except subprocess.TimeoutExpired as e:
-        sys.stderr.write("Status: FAIL due to timeout " + '\n' + (e.stderr.decode("utf8") if e.stderr is not None else "") + '\n')
-        sys.stderr.flush()
-        return None
-
-    return output_vcf_path
-
-
 def main(
         tsv_path,
         column_names,
@@ -134,9 +90,9 @@ def main(
 
     output_subdirectory = os.path.join(output_directory, "vcfs")
     for path in bam_paths:
-            # TODO: add tandem bed path argument for sniffles
-            vcf_path = run_sniffles(ref_path=ref_path, output_dir=output_subdirectory, bam_path=path, n_threads=n_threads)
-            indexed_vcf_path = compress_and_index_vcf(vcf_path=vcf_path)
+        # TODO: add tandem bed path argument for sniffles
+        vcf_path = run_sniffles(ref_path=ref_path, output_dir=output_subdirectory, bam_path=path, n_threads=n_threads)
+        indexed_vcf_path = compress_and_index_vcf(vcf_path=vcf_path, use_cache=True)
 
     return
 

@@ -1,5 +1,6 @@
 import ortools.sat.python.cp_model
 
+from modules.Vcf import vcf_to_graph,write_paths_to_vcf,remove_empty_nodes_from_variant_graph
 from modules.Align import run_minimap2,run_minigraph,run_mashmap,run_minimap2_on_read_subset
 from modules.Cigar import iterate_cigar,cigar_index_to_char,is_ref_move
 from modules.IterativeHistogram import IterativeHistogram
@@ -7,7 +8,6 @@ from modules.IncrementalIdMap import IncrementalIdMap
 from modules.Bam import get_region_from_bam
 from modules.Sequence import iterate_fasta
 from modules.Bed import parse_bed_regions
-from modules.Vcf import vcf_to_graph
 from modules.Authenticator import *
 from modules.Paths import Paths
 from modules.GsUri import *
@@ -1023,7 +1023,6 @@ def enumerate_paths_using_alignments(alleles, gaf_path: str, output_directory: s
             read_name = tokens[0]
 
             if read_subset is not None and read_name not in read_subset:
-                print("skipping read: " + read_name)
                 continue
 
             # Column 5 (0-based) is the path column in a GAF file
@@ -1141,42 +1140,6 @@ def get_reads_from_bam(output_path, bam_path, token):
             return False
 
     return output_path
-
-def path_recursion(graph, alleles, id, path_sequence=None):
-    if path_sequence is None:
-        path_sequence = list()
-
-    path_sequence.append(id)
-    out_edges = graph.out_edges(id)
-
-    if len(out_edges) == 0:
-        yield path_sequence
-    else:
-        for edge in out_edges:
-            yield from path_recursion(graph=graph, alleles=alleles, id=edge[1], path_sequence=copy(path_sequence))
-
-
-def enumerate_paths(alleles, graph, output_directory):
-    # Get start node
-    start_id = None
-
-    for i in range(len(alleles)):
-        if alleles[i].is_left_flank:
-            start_id = i
-
-    print("Starting path recursion from %d" % start_id)
-
-    paths = [p for p in path_recursion(graph=graph, alleles=alleles, id=start_id)]
-
-    output_path = os.path.join(output_directory, "paths.fasta")
-    with open(output_path, 'w') as file:
-        for path in paths:
-            name = '_'.join([str(i) for i in path])
-            file.write(">%s\n" % name)
-            for i in path:
-                file.write("%s" % alleles[i].sequence)
-
-            file.write('\n')
 
 
 def trim_flanks_from_ref_alleles(alleles, flank_length):
@@ -1403,7 +1366,7 @@ def get_read_costs_from_alignments(
     return path_to_read_costs
 
 
-def write_path_assignments_to_file(solution, sample_id_map, paths, alleles, output_directory):
+def write_path_assignments_to_fasta(solution, sample_id_map, paths, alleles, output_directory):
     counter = defaultdict(int)
 
     assigned_haplotypes_path = os.path.join(output_directory, "assigned_haplotypes.fasta")
@@ -1424,6 +1387,26 @@ def write_path_assignments_to_file(solution, sample_id_map, paths, alleles, outp
 
             file.write("\n")
 
+
+def write_path_assignments_to_vcf(solution, sample_id_map, paths, alleles, edge_to_deletion_index, output_directory):
+    output_subdirectory = os.path.join(output_directory, "vcf")
+    if not os.path.exists(output_subdirectory):
+        os.makedirs(output_subdirectory)
+
+    paths_per_sample = defaultdict(set)
+    for [path_id,sample_id],value in solution.path_to_sample.items():
+        # Only consider combinations of path/sample that were actually assigned by the optimizer
+        if value == 0:
+            continue
+
+        sample_name = sample_id_map.get_name(sample_id)
+        path = paths.get_path(path_id)
+
+        paths_per_sample[sample_name].add(path)
+
+    for sample,paths in paths_per_sample.items():
+        output_path = os.path.join(output_subdirectory, sample + ".vcf")
+        write_paths_to_vcf(alleles, paths, output_path, sample, edge_to_deletion_index=edge_to_deletion_index)
 
 
 def infer_haplotypes(
@@ -1536,20 +1519,7 @@ def infer_haplotypes(
         output_path=plot_path)
 
     # Remove empty nodes
-    empty_nodes = list()
-    for n in graph.nodes:
-        if len(alleles[n].sequence) == 0:
-            empty_nodes.append(n)
-
-    for n in empty_nodes:
-        a_nodes = [e[0] for e in graph.in_edges(n)]
-        b_nodes = [e[1] for e in graph.out_edges(n)]
-
-        for a in a_nodes:
-            for b in b_nodes:
-                graph.add_edge(a,b, weight=0)
-
-        graph.remove_node(n)
+    graph, edge_to_deletion_index = remove_empty_nodes_from_variant_graph(graph, alleles)
 
     # Write the GFA
     output_gfa_path = output_gfa_path.replace(".gfa", "_no_empty.gfa")
@@ -1731,6 +1701,8 @@ def infer_haplotypes(
             output_directory=path_subdirectory,
             filename_prefix="all_paths_vs_ref")
 
+        os.remove(chromosome_fasta_path)
+
     pyplot.close("all")
 
     fig = pyplot.figure()
@@ -1843,10 +1815,19 @@ def infer_haplotypes(
     b = time.time()
     time_elapsed_optimizer = b - a
 
-    # Before writing the final output alleles, trim the flanking sequence (to make evaluation simpler)
+    write_path_assignments_to_vcf(
+        solution=solution,
+        sample_id_map=sample_id_map,
+        paths=paths,
+        alleles=alleles,
+        edge_to_deletion_index=edge_to_deletion_index,
+        output_directory=output_directory
+    )
+
+    # Before writing the final output sequences, trim the flanking sequence (to make evaluation simpler)
     trim_flanks_from_ref_alleles(alleles, flank_length)
 
-    write_path_assignments_to_file(
+    write_path_assignments_to_fasta(
         solution=solution,
         sample_id_map=sample_id_map,
         paths=paths,

@@ -1,3 +1,4 @@
+from copy import copy
 
 
 class Paths:
@@ -98,6 +99,35 @@ class Paths:
 
     def __len__(self):
         return self.n
+
+
+def path_recursion(graph, alleles, id, path_sequence=None):
+    if path_sequence is None:
+        path_sequence = list()
+
+    path_sequence.append(id)
+    out_edges = graph.out_edges(id)
+
+    if len(out_edges) == 0:
+        yield path_sequence
+    else:
+        for edge in out_edges:
+            yield from path_recursion(graph=graph, alleles=alleles, id=edge[1], path_sequence=copy(path_sequence))
+
+
+def enumerate_paths(alleles, graph):
+    # Get start node
+    start_id = None
+
+    for i in range(len(alleles)):
+        if alleles[i].is_left_flank:
+            start_id = i
+
+    print("Starting path recursion from %d" % start_id)
+
+    paths = [p for p in path_recursion(graph=graph, alleles=alleles, id=start_id)]
+
+    return paths
 
 
 def test():

@@ -59,6 +59,9 @@ def get_overlap_sites(output_dir, region_string, vcfs_per_sample, bed_path, bed_
 
     output_path = os.path.join(output_dir,"sites.bed")
 
+    total_intervals = 0
+    total_intervals_in_bed = 0
+
     with open(output_path, 'w') as file:
         for chromosome,intervals in intervals_per_chromosome.items():
             graph = IntervalGraph(intervals)
@@ -69,6 +72,8 @@ def get_overlap_sites(output_dir, region_string, vcfs_per_sample, bed_path, bed_
             n_samples = list()
 
             for c,component in enumerate(components):
+                in_bed = False
+
                 s = len(component)
 
                 samples = set()
@@ -87,6 +92,7 @@ def get_overlap_sites(output_dir, region_string, vcfs_per_sample, bed_path, bed_
 
                 # Remove the bed name from the set of samples which have overlapping intervals in this component,
                 if bed_name in samples:
+                    in_bed = True
                     samples.remove(bed_name)
                     s -= 1
 
@@ -99,7 +105,11 @@ def get_overlap_sites(output_dir, region_string, vcfs_per_sample, bed_path, bed_
 
                 # Only include regions that have at least one real interval (not from the BED file)
                 if len(samples) >= 1 and right_coord - left_coord < max_interval_length:
-                    file.write('\t'.join([chromosome,str(left_coord),str(right_coord)]))
+                    if in_bed:
+                        total_intervals_in_bed += 1
+
+                    total_intervals += 1
+                    file.write('\t'.join([chromosome,str(left_coord),str(right_coord),str(in_bed)]))
                     file.write('\n')
 
         # pyplot.figure()
@@ -114,6 +124,9 @@ def get_overlap_sites(output_dir, region_string, vcfs_per_sample, bed_path, bed_
         #
         # pyplot.show()
         # pyplot.close()
+
+    print(total_intervals)
+    print(total_intervals_in_bed)
 
     return output_path
 
