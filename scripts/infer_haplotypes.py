@@ -1392,7 +1392,7 @@ def write_path_assignments_to_fasta(solution, sample_id_map, paths, alleles, out
             file.write("\n")
 
 
-def write_path_assignments_to_vcf(solution, sample_id_map, paths, alleles, edge_to_deletion_index, output_directory):
+def write_path_assignments_to_vcf(solution, sample_id_map, paths, alleles, edge_to_deletion_index, output_directory, n_threads):
     output_subdirectory = os.path.join(output_directory, "vcf")
     if not os.path.exists(output_subdirectory):
         os.makedirs(output_subdirectory)
@@ -1408,9 +1408,15 @@ def write_path_assignments_to_vcf(solution, sample_id_map, paths, alleles, edge_
 
         paths_per_sample[sample_name].add(path)
 
+    args = list()
+
     for sample,paths in paths_per_sample.items():
         output_path = os.path.join(output_subdirectory, sample + ".vcf")
-        write_paths_to_vcf(alleles, paths, output_path, sample, edge_to_deletion_index=edge_to_deletion_index)
+        # alleles, paths, output_path, sample_name, edge_to_deletion_index, compress_and_index
+        args.append((alleles, paths, output_path, sample, edge_to_deletion_index, True))
+
+    with Pool(n_threads) as pool:
+        results = pool.starmap(write_paths_to_vcf, args)
 
     return output_subdirectory
 
@@ -1840,7 +1846,8 @@ def infer_haplotypes(
         paths=paths,
         alleles=alleles,
         edge_to_deletion_index=edge_to_deletion_index,
-        output_directory=output_directory
+        output_directory=output_directory,
+        n_threads=n_threads
     )
 
     merged_vcf_path = os.path.join(output_directory, "all_samples.vcf")

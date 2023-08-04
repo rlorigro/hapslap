@@ -129,11 +129,27 @@ class Allele:
         self.samples = set()
         self.is_left_flank = False
         self.is_right_flank = False
-        self.record = None
-        self.alt_index = None
+        self.vcf_data = None
 
     def add_sample(self, s):
         self.samples.add(s)
+
+    def construct_vcf_data(self, vcf_record, alt_index):
+        self.vcf_data = {
+            "CHROM":str(vcf_record.CHROM),
+            "POS":str(vcf_record.POS),
+            "ID":str(vcf_record.ID),
+            "REF":str(vcf_record.REF),
+            "ALT":str(vcf_record.ALT[alt_index-1]),
+            "QUAL":str(vcf_record.QUAL),
+            "FILTER":"PASS",
+            "INFO":'',
+            "FORMAT":"GT",
+            "GT":"0/1"
+        }
+
+    def get_vcf_data(self):
+        return (self.vcf_data[x] for x in ["CHROM","POS","ID","REF","ALT","QUAL","FILTER","INFO","FORMAT","GT"])
 
     def __str__(self):
         return "[%s,%s]\t%s" % (self.start, self.stop, self.sequence)
@@ -155,7 +171,7 @@ class Allele:
 Given any number of VCFs, build a set of Allele objects which are merged by their hash(sequence,start,stop), retaining
 sample names for all merged alleles
 """
-def get_alleles_from_vcfs(ref_path, data_per_sample, chromosome, ref_start=None, ref_stop=None, debug=True):
+def get_alleles_from_vcfs(ref_path, data_per_sample, chromosome, ref_start=None, ref_stop=None, debug=False):
     region_string = chromosome
 
     if ref_start is not None and ref_stop is not None:
@@ -254,8 +270,7 @@ def get_alleles_from_vcfs(ref_path, data_per_sample, chromosome, ref_start=None,
                         # Collapse identical alleles by hashing them as a fn of start,stop,sequence
                         # But keep track of which samples are collapsed together
                         a = Allele(start, stop, sequence)
-                        a.record = deepcopy(record)
-                        a.alt_index = allele_index - 1
+                        a.construct_vcf_data(record,allele_index)
                         h = a.hash()
 
                         if h not in alleles:
@@ -377,26 +392,26 @@ def remove_empty_nodes_from_variant_graph(graph, alleles):
     return graph, edge_to_deletion_index
 
 
-def get_data(record, n, alleles):
-
-    # CHROM  POS    ID          REF  ALT  QUAL  FILTER  INFO                     FORMAT       NA00001
-    # 20     14370  rs6054257   G    A    29    PASS    NS=3;DP=14;AF=0.5;DB;H2  GT:GQ:DP:HQ  0|0:48:1:51,51
-    alt_index = alleles[n].alt_index
-
-    # Summarize the data and hash by pos + data
-    data = (
-        str(record.CHROM),
-        str(record.POS),
-        str(record.ID),
-        str(record.REF),
-        str(record.ALT[alt_index]),
-        str(record.QUAL),
-        "PASS",
-        '',
-        "GT",
-        "0/1")
-
-    return data
+# def get_data(record, n, alleles):
+#
+#     # CHROM  POS    ID          REF  ALT  QUAL  FILTER  INFO                     FORMAT       NA00001
+#     # 20     14370  rs6054257   G    A    29    PASS    NS=3;DP=14;AF=0.5;DB;H2  GT:GQ:DP:HQ  0|0:48:1:51,51
+#     alt_index = alleles[n].alt_index
+#
+#     # Summarize the data and hash by pos + data
+#     data = (
+#         str(record.CHROM),
+#         str(record.POS),
+#         str(record.ID),
+#         str(record.REF),
+#         str(record.ALT[alt_index]),
+#         str(record.QUAL),
+#         "PASS",
+#         '',
+#         "GT",
+#         "0/1")
+#
+#     return data
 
 
 def write_paths_to_vcf(alleles:list, paths:list, output_path:str, sample_name, edge_to_deletion_index=None, compress_and_index=True):
@@ -417,24 +432,22 @@ def write_paths_to_vcf(alleles:list, paths:list, output_path:str, sample_name, e
                         n_del = edge_to_deletion_index[edge]
 
                         # If the edge is found in the mapping, it is guaranteed to be in the alleles list
-                        r = alleles[n_del].record
-                        data = get_data(r,n_del,alleles)
-                        records_per_position[r.POS].add(data)
-
-                # Find the VCF record for this allele
-                r = alleles[n].record
+                        pos = int(alleles[n_del].vcf_data["POS"])
+                        data = tuple(alleles[n_del].get_vcf_data())
+                        records_per_position[pos].add(data)
 
                 # Skip ref nodes which have no record
-                if r is None:
+                if alleles[n].vcf_data is None:
                     continue
 
-                data = get_data(r,n,alleles)
-                records_per_position[r.POS].add(data)
+                pos = int(alleles[n].vcf_data["POS"])
+                data = tuple(alleles[n].get_vcf_data())
+                records_per_position[pos].add(data)
 
         for pos,items in sorted(records_per_position.items(), key=lambda x: x[0]):
-                for data in items:
-                    file.write('\t'.join(data))
-                    file.write('\n')
+            for data in items:
+                file.write('\t'.join(data))
+                file.write('\n')
 
     if compress_and_index:
         compress_and_index_vcf(output_path)
