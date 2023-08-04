@@ -640,7 +640,7 @@ def evaluate_test_haplotypes(
 
             if tier == last_tier:
                 axes.text(pos[n][0], pos[n][1], str(d_min_test) + ' ', fontsize=7, ha="center", va="top", rotation=90)
-                axes.text(pos[n][0], y_margin, labels[n] + "  ", fontsize=7, ha="center", va="top", rotation=90)
+                axes.text(pos[n][0], y_margin, labels[n] + "   ", fontsize=7, ha="center", va="top", rotation=90)
                 test_distance_per_sample[values["label"]] = d_min_test
                 input_distance_per_sample[values["label"]] = d_min_input
 

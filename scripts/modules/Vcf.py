@@ -83,46 +83,42 @@ def compress_and_index_vcf(vcf_path, timeout=60*60, use_cache=False):
     return output_vcf_path
 
 
-# TODO: FINISH IMPLEMENTING bcftools merge -0 *.vcf.gz
-# def merge_sample_vcfs(vcf_directory, timeout=60*60):
-#     output_directory = os.path.basename(vcf_directory)
-#     output_path = os.path.join(output_directory, "assigned_alleles.vcf")
-#
-#     args = ["bgzip", "-f", vcf_path]
-#
-#     sys.stderr.write(" ".join(args)+'\n')
-#
-#     try:
-#         p1 = subprocess.run(args, check=True, stderr=subprocess.PIPE, timeout=timeout)
-#
-#     except subprocess.CalledProcessError as e:
-#         sys.stderr.write("Status: FAIL " + '\n' + (e.stderr.decode("utf8") if e.stderr is not None else "") + '\n')
-#         sys.stderr.flush()
-#         return None
-#
-#     except subprocess.TimeoutExpired as e:
-#         sys.stderr.write("Status: FAIL due to timeout " + '\n' + (e.stderr.decode("utf8") if e.stderr is not None else "") + '\n')
-#         sys.stderr.flush()
-#         return None
-#
-#     args = ["tabix", "-p", "vcf", output_vcf_path]
-#
-#     sys.stderr.write(" ".join(args)+'\n')
-#
-#     try:
-#         p1 = subprocess.run(args, check=True, stderr=subprocess.PIPE, timeout=timeout)
-#
-#     except subprocess.CalledProcessError as e:
-#         sys.stderr.write("Status: FAIL " + '\n' + (e.stderr.decode("utf8") if e.stderr is not None else "") + '\n')
-#         sys.stderr.flush()
-#         return None
-#
-#     except subprocess.TimeoutExpired as e:
-#         sys.stderr.write("Status: FAIL due to timeout " + '\n' + (e.stderr.decode("utf8") if e.stderr is not None else "") + '\n')
-#         sys.stderr.flush()
-#         return None
-#
-#     return output_vcf_path
+def merge_vcfs(vcf_paths, output_path, timeout=60*60):
+    # bcftools merge -0 *.vcf.gz
+    args = ["bcftools", "merge", "-m", "none", "-0"] + vcf_paths
+
+    sys.stderr.write(" ".join(args)+'\n')
+
+    with open(output_path, 'w') as file:
+        try:
+            p1 = subprocess.run(args, check=True, stderr=subprocess.PIPE, stdout=file, timeout=timeout)
+
+        except subprocess.CalledProcessError as e:
+            sys.stderr.write("Status: FAIL " + '\n' + (e.stderr.decode("utf8") if e.stderr is not None else "") + '\n')
+            sys.stderr.flush()
+            return None
+
+        except subprocess.TimeoutExpired as e:
+            sys.stderr.write("Status: FAIL due to timeout " + '\n' + (e.stderr.decode("utf8") if e.stderr is not None else "") + '\n')
+            sys.stderr.flush()
+            return None
+
+    return output_path
+
+
+def merge_vcfs_in_directory(vcf_directory, output_path, compress_and_index=True):
+    all_vcf_paths = list()
+
+    for filename in os.listdir(vcf_directory):
+        if filename.endswith(".vcf.gz"):
+            all_vcf_paths.append(os.path.join(vcf_directory, filename))
+
+    output_path = merge_vcfs(vcf_paths=all_vcf_paths, output_path=output_path)
+
+    if compress_and_index:
+        compress_and_index_vcf(vcf_path=output_path)
+
+    return output_path
 
 
 class Allele:
@@ -243,8 +239,8 @@ def get_alleles_from_vcfs(ref_path, data_per_sample, chromosome, ref_start=None,
                         # which means that the graph will contain edges in the flanking regions, which will
                         # be deleted at the end to generate haplotypes... causing issues
                         if ref_start is not None and ref_stop is not None:
-                            if ref_stop < start < ref_start or ref_stop < stop < ref_start:
-                                raise Exception("ERROR: VCF allele with coords %d-%d extends out of region %s:%d-%d" % (start,stop,chromosome,ref_start,ref_stop))
+                            if start < ref_start or stop > ref_stop:
+                                raise Exception("ERROR: VCF allele in sample %s with coords %d-%d extends out of region %s:%d-%d" % (sample_name, start,stop,chromosome,ref_start,ref_stop))
 
                         if sequence.strip() == "<DUP>":
                             sequence = ref_sequence[start:start+b_length+1]
@@ -411,7 +407,6 @@ def write_paths_to_vcf(alleles:list, paths:list, output_path:str, sample_name, e
         file.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t%s\n" % sample_name)
 
         for path in paths:
-            print(sample_name, path)
             for i,n in enumerate(path):
                 # Deletions are implicit in the graph (empty nodes are removed) and therefore need to be searched by
                 # pairs of nodes (edges) instead of by single nodes

@@ -1,6 +1,6 @@
 import ortools.sat.python.cp_model
 
-from modules.Vcf import vcf_to_graph,write_paths_to_vcf,remove_empty_nodes_from_variant_graph
+from modules.Vcf import vcf_to_graph,write_paths_to_vcf,remove_empty_nodes_from_variant_graph,merge_vcfs_in_directory
 from modules.Align import run_minimap2,run_minigraph,run_mashmap,run_minimap2_on_read_subset
 from modules.Cigar import iterate_cigar,cigar_index_to_char,is_ref_move
 from modules.IterativeHistogram import IterativeHistogram
@@ -1412,6 +1412,8 @@ def write_path_assignments_to_vcf(solution, sample_id_map, paths, alleles, edge_
         output_path = os.path.join(output_subdirectory, sample + ".vcf")
         write_paths_to_vcf(alleles, paths, output_path, sample, edge_to_deletion_index=edge_to_deletion_index)
 
+    return output_subdirectory
+
 
 def infer_haplotypes(
         ref_path,
@@ -1832,7 +1834,7 @@ def infer_haplotypes(
     b = time.time()
     time_elapsed_optimizer = b - a
 
-    write_path_assignments_to_vcf(
+    vcf_subdirectory = write_path_assignments_to_vcf(
         solution=solution,
         sample_id_map=sample_id_map,
         paths=paths,
@@ -1840,6 +1842,9 @@ def infer_haplotypes(
         edge_to_deletion_index=edge_to_deletion_index,
         output_directory=output_directory
     )
+
+    merged_vcf_path = os.path.join(output_directory, "all_samples.vcf")
+    merge_vcfs_in_directory(vcf_subdirectory, output_path=merged_vcf_path)
 
     # Before writing the final output sequences, trim the flanking sequence (to make evaluation simpler)
     trim_flanks_from_ref_alleles(alleles, flank_length)
