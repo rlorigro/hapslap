@@ -239,7 +239,7 @@ def get_alleles_from_vcfs(ref_path, data_per_sample, chromosome, ref_start=None,
                         # which means that the graph will contain edges in the flanking regions, which will
                         # be deleted at the end to generate haplotypes... causing issues
                         if ref_start is not None and ref_stop is not None:
-                            if start < ref_start or stop > ref_stop:
+                            if start < ref_start - 1 or stop > ref_stop:
                                 raise Exception("ERROR: VCF allele in sample %s with coords %d-%d extends out of region %s:%d-%d" % (sample_name, start,stop,chromosome,ref_start,ref_stop))
 
                         if sequence.strip() == "<DUP>":
