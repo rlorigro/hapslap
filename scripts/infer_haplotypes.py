@@ -112,7 +112,8 @@ def plot_graph(
         font_size=4,
         width=0.2,
         arrowsize=3,
-        with_labels=True)
+        with_labels=True
+    )
 
     if draw_edge_weight_overlay:
         for edge in graph.edges(data='weight'):
@@ -125,7 +126,8 @@ def plot_graph(
                 arrowstyle='-',
                 node_size=node_size,
                 alpha=0.6,
-                edge_color="#007cbe")
+                edge_color="#007cbe"
+            )
 
     ylim = list(a.get_ylim())
     ylim[0] -= 0.5
@@ -886,7 +888,8 @@ def optimize_with_d_norm(
         n_coeff=n_coeff,
         sample_to_reads=sample_to_reads,
         output_dir=output_dir,
-        n_threads=n_threads)
+        n_threads=n_threads
+    )
 
     # Multiply each factor in the cost function by the other factor's normalization constant to attempt to equalize them
     # Then add an arbitrary additional term to weight the solution
@@ -906,7 +909,8 @@ def optimize_with_d_norm(
         n_coeff=n_coeff,
         sample_to_reads=sample_to_reads,
         output_dir=output_dir,
-        n_threads=n_threads)
+        n_threads=n_threads
+    )
 
     return solution
 
@@ -1447,7 +1451,8 @@ def infer_haplotypes(
         flank_length=flank_length,
         min_coverage=min_coverage,
         max_path_to_read_cost=max_path_to_read_cost,
-        json_path=json_log_path)
+        json_path=json_log_path
+    )
 
     tokenator = GoogleToken()
 
@@ -1463,7 +1468,8 @@ def infer_haplotypes(
         ref_start=ref_start,
         ref_stop=ref_stop,
         ref_sample_name=ref_sample_name,
-        flank_length=flank_length)
+        flank_length=flank_length
+    )
 
     if len(alleles) == 1:
         if alleles[0].is_left_flank and alleles[0].is_right_flank:
@@ -1516,7 +1522,8 @@ def infer_haplotypes(
         ref_id_offset=ref_id_offset,
         ref_color=ref_color,
         sample_color=sample_color,
-        output_path=plot_path)
+        output_path=plot_path
+    )
 
     # Remove empty nodes
     graph, edge_to_deletion_index = remove_empty_nodes_from_variant_graph(graph, alleles)
@@ -1532,7 +1539,8 @@ def infer_haplotypes(
         ref_id_offset=ref_id_offset,
         ref_color=ref_color,
         sample_color=sample_color,
-        output_path=plot_path)
+        output_path=plot_path
+    )
 
     read_fasta_path = os.path.join(output_directory, "reads.fasta")
 
@@ -1566,7 +1574,8 @@ def infer_haplotypes(
         get_reads_from_bam(
             output_path=read_fasta_path,
             bam_path=region_bam_path,
-            token=tokenator)
+            token=tokenator
+        )
 
         os.remove(region_bam_path)
 
@@ -1578,7 +1587,8 @@ def infer_haplotypes(
     output_gaf_path = run_minigraph(
         output_directory=output_directory,
         gfa_path=output_gfa_path,
-        fasta_path=read_fasta_path)
+        fasta_path=read_fasta_path
+    )
 
     b = time.time()
     time_elapsed_minigraph = b - a
@@ -1587,7 +1597,8 @@ def infer_haplotypes(
     update_edge_weights_using_alignments(
         alleles=alleles,
         gaf_path=output_gaf_path,
-        graph=graph)
+        graph=graph
+    )
 
     plot_path = os.path.join(output_directory, "dag_aligned.png")
     plot_graph(
@@ -1597,7 +1608,8 @@ def infer_haplotypes(
         sample_color=sample_color,
         output_path=plot_path,
         line_style=':',
-        draw_edge_weight_overlay=True)
+        draw_edge_weight_overlay=True
+    )
 
     path_subdirectory = os.path.join(output_directory, "paths")
     os.makedirs(path_subdirectory)
@@ -1663,7 +1675,8 @@ def infer_haplotypes(
             preset="map-hifi",
             n_threads=n_threads,
             output_directory=path_subdirectory,
-            filename_prefix=str(p))
+            filename_prefix=str(p)
+        )
 
         bam_paths.append(bam_path)
 
@@ -1699,7 +1712,8 @@ def infer_haplotypes(
             n_threads=n_threads,
             n_sort_threads=n_sort_threads,
             output_directory=path_subdirectory,
-            filename_prefix="all_paths_vs_ref")
+            filename_prefix="all_paths_vs_ref"
+        )
 
         os.remove(chromosome_fasta_path)
 
@@ -1720,7 +1734,8 @@ def infer_haplotypes(
         paths=paths,
         flank_length=flank_length,
         interval_pad_length=interval_pad_length,
-        path_to_read_costs=path_to_read_costs)
+        path_to_read_costs=path_to_read_costs
+    )
 
     reads_csv_path = os.path.join(output_directory, "reads.csv")
     read_id_map.write_to_file(reads_csv_path)
@@ -1778,7 +1793,8 @@ def infer_haplotypes(
         paths=paths,
         read_id_map=read_id_map,
         read_to_sample=read_to_sample,
-        sample_id_map=sample_id_map)
+        sample_id_map=sample_id_map
+    )
 
     a = time.time()
 
@@ -1810,7 +1826,8 @@ def infer_haplotypes(
         paths=paths,
         sample_to_reads=sample_id_to_read_ids,
         output_dir=output_directory,
-        n_threads=n_threads)
+        n_threads=n_threads
+    )
 
     b = time.time()
     time_elapsed_optimizer = b - a
@@ -1832,7 +1849,8 @@ def infer_haplotypes(
         sample_id_map=sample_id_map,
         paths=paths,
         alleles=alleles,
-        output_directory=output_directory)
+        output_directory=output_directory
+    )
 
     genotype_support_output_path = os.path.join(output_directory, "genotype_support.csv")
 
@@ -1841,7 +1859,8 @@ def infer_haplotypes(
         paths=paths,
         sample_id_to_read_ids=sample_id_to_read_ids,
         sample_id_map=sample_id_map,
-        read_id_map=read_id_map)
+        read_id_map=read_id_map
+    )
 
     time_stop = time.time()
     time_elapsed_total = time_stop - time_start
@@ -1953,7 +1972,8 @@ def main(json_path, max_parameters, n_threads):
         max_path_to_read_cost=max_path_to_read_cost,
         input_directory=input_directory,
         output_directory=output_directory,
-        json_path=json_log_path)
+        json_path=json_log_path
+    )
 
     data_per_sample = defaultdict(dict)
 
