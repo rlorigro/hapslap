@@ -720,7 +720,7 @@ if __name__ == "__main__":
         "-i","--input_dir",
         required=True,
         type=str,
-        help="Output directory"
+        help="Input directory"
     )
 
     parser.add_argument(

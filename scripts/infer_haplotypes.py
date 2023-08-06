@@ -1850,7 +1850,7 @@ def infer_haplotypes(
         n_threads=n_threads
     )
 
-    merged_vcf_path = os.path.join(output_directory, "all_samples.vcf")
+    merged_vcf_path = os.path.join(output_directory, region_string.replace(":","_") + ".vcf")
     merge_vcfs_in_directory(vcf_subdirectory, output_path=merged_vcf_path)
 
     # Before writing the final output sequences, trim the flanking sequence (to make evaluation simpler)

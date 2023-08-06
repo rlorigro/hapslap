@@ -24,6 +24,9 @@ class Sequence:
     def __len__(self):
         return len(self.sequence)
 
+    def to_fasta_string(self):
+        return ">%s\n%s" % (self.name, self.sequence)
+
 
 def iterate_fasta(path, force_upper_case=False, normalize_name=False):
     name = ""

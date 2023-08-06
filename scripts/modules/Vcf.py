@@ -84,8 +84,9 @@ def compress_and_index_vcf(vcf_path, timeout=60*60, use_cache=False):
 
 
 def merge_vcfs(vcf_paths, output_path, timeout=60*60):
-    # bcftools merge -0 *.vcf.gz
+    # args = ["bcftools", "merge", "-0"] + vcf_paths
     args = ["bcftools", "merge", "-m", "none", "-0"] + vcf_paths
+    # args = ["bcftools", "merge", "-m", "none"] + vcf_paths
 
     sys.stderr.write(" ".join(args)+'\n')
 
@@ -143,7 +144,7 @@ class Allele:
             "ALT":str(vcf_record.ALT[alt_index-1]),
             "QUAL":str(vcf_record.QUAL),
             "FILTER":"PASS",
-            "INFO":'',
+            "INFO":'.',
             "FORMAT":"GT",
             "GT":"0/1"
         }
@@ -171,7 +172,7 @@ class Allele:
 Given any number of VCFs, build a set of Allele objects which are merged by their hash(sequence,start,stop), retaining
 sample names for all merged alleles
 """
-def get_alleles_from_vcfs(ref_path, data_per_sample, chromosome, ref_start=None, ref_stop=None, debug=False):
+def get_alleles_from_vcfs(ref_path, data_per_sample, chromosome, ref_start=None, ref_stop=None, debug=True):
     region_string = chromosome
 
     if ref_start is not None and ref_stop is not None:
@@ -202,81 +203,80 @@ def get_alleles_from_vcfs(ref_path, data_per_sample, chromosome, ref_start=None,
                     print("var_subtype:\t%s" % record.var_subtype)
                     print("start:\t\t%d" % record.start)
 
-                # One VCF per sample, no iterating of samples needed
-                call = record.samples[0]
-                gt = [int(call.data.GT[0]) if call.data.GT[0] != '.' else 0, int(call.data.GT[-1]) if call.data.GT[-1] != '.' else 0]
+                for call in record.samples:
+                    gt = [int(call.data.GT[0]) if call.data.GT[0] != '.' else 0, int(call.data.GT[-1]) if call.data.GT[-1] != '.' else 0]
 
-                if debug:
-                    print("gt:\t\t%d/%d" % (gt[0], gt[1]))
-                    print("ref_length:\t%d" % len(record.alleles[0]))
-                    print("var_type:\t%s" % record.var_type)
-                    print("is_sv_precise:\t%d" % record.is_sv_precise)
-
-                b_length = None
-                if record.var_subtype == "DUP":
-                    b_length = record.INFO["SVLEN"]
-                elif record.var_subtype == "INV":
-                    b_length = record.INFO["SVLEN"]
-                elif record.var_subtype == "complex":
-                    sys.stderr.write("WARNING: skipping break end operation: " + chromosome + ":" + str(record.start) + '\n')
-                    continue
-                else:
-                    try:
-                        b_length = len(record.alleles[gt[1]])
-                    except Exception as e:
-                        sys.stderr.write("WARNING: Skipping unparsable variant:\n")
-                        sys.stderr.write(vcf_path)
-                        sys.stderr.write('\n')
-                        sys.stderr.write(str(record))
-                        sys.stderr.write('\n')
-                        continue
-
-                # print("a_length:\t%d" % len(record.alleles[gt[0]]))
-                if debug:
-                    print("b_length:\t%d" % b_length)
-
-                # Iterate unique, non-ref alleles only
-                for allele_index in set(gt):
                     if debug:
-                        print(record.alleles[allele_index])
+                        print("gt:\t\t%d/%d" % (gt[0], gt[1]))
+                        print("ref_length:\t%d" % len(record.alleles[0]))
+                        print("var_type:\t%s" % record.var_type)
+                        print("is_sv_precise:\t%d" % record.is_sv_precise)
 
-                    if allele_index != 0:
-                        l = len(record.alleles[0]) if record.alleles[0] != 'N' else 0
-                        not_insert = (l >= b_length)
+                    b_length = None
+                    if record.var_subtype == "DUP":
+                        b_length = record.INFO["SVLEN"]
+                    elif record.var_subtype == "INV":
+                        b_length = record.INFO["SVLEN"]
+                    elif record.var_subtype == "complex":
+                        sys.stderr.write("WARNING: skipping break end operation: " + chromosome + ":" + str(record.start) + '\n')
+                        continue
+                    else:
+                        try:
+                            b_length = len(record.alleles[gt[1]])
+                        except Exception as e:
+                            sys.stderr.write("WARNING: Skipping unparsable variant:\n")
+                            sys.stderr.write(vcf_path)
+                            sys.stderr.write('\n')
+                            sys.stderr.write(str(record))
+                            sys.stderr.write('\n')
+                            continue
 
-                        # We are sorting by ref coordinates, so we use the ref allele start/stop to keep track of
-                        # where the alt allele will be substituted
-                        start = int(record.start)
-                        stop = start + l + int(not_insert)
+                    # print("a_length:\t%d" % len(record.alleles[gt[0]]))
+                    if debug:
+                        print("b_length:\t%d" % b_length)
 
-                        sequence = str(record.alleles[allele_index])
+                    # Iterate unique, non-ref alleles only
+                    for allele_index in set(gt):
+                        if debug:
+                            print(record.alleles[allele_index])
 
-                        # Occasionally the region can be cut wrong, e.g. directly through a deletion variant,
-                        # which means that the graph will contain edges in the flanking regions, which will
-                        # be deleted at the end to generate haplotypes... causing issues
-                        if ref_start is not None and ref_stop is not None:
-                            if start < ref_start - 1 or stop > ref_stop:
-                                raise Exception("ERROR: VCF allele in sample %s with coords %d-%d extends out of region %s:%d-%d" % (sample_name, start,stop,chromosome,ref_start,ref_stop))
+                        if allele_index != 0:
+                            l = len(record.alleles[0]) if record.alleles[0] != 'N' else 0
+                            not_insert = (l >= b_length)
 
-                        if sequence.strip() == "<DUP>":
-                            sequence = ref_sequence[start:start+b_length+1]
-                        elif sequence.strip() == "<INV>":
-                            sequence = ref_sequence[start:start+b_length+1][::-1]
-                        elif sequence == 'N':
-                            sequence = ''
-                        else:
-                            pass
+                            # We are sorting by ref coordinates, so we use the ref allele start/stop to keep track of
+                            # where the alt allele will be substituted
+                            start = int(record.start)
+                            stop = start + l + int(not_insert)
 
-                        # Collapse identical alleles by hashing them as a fn of start,stop,sequence
-                        # But keep track of which samples are collapsed together
-                        a = Allele(start, stop, sequence)
-                        a.construct_vcf_data(record,allele_index)
-                        h = a.hash()
+                            sequence = str(record.alleles[allele_index])
 
-                        if h not in alleles:
-                            alleles[h] = a
+                            # Occasionally the region can be cut wrong, e.g. directly through a deletion variant,
+                            # which means that the graph will contain edges in the flanking regions, which will
+                            # be deleted at the end to generate haplotypes... causing issues
+                            if ref_start is not None and ref_stop is not None:
+                                if start < ref_start - 1 or stop > ref_stop:
+                                    raise Exception("ERROR: VCF allele in sample %s with coords %d-%d extends out of region %s:%d-%d" % (sample_name, start,stop,chromosome,ref_start,ref_stop))
 
-                        alleles[h].add_sample(sample_name)
+                            if sequence.strip() == "<DUP>":
+                                sequence = ref_sequence[start:start+b_length+1]
+                            elif sequence.strip() == "<INV>":
+                                sequence = ref_sequence[start:start+b_length+1][::-1]
+                            elif sequence == 'N':
+                                sequence = ''
+                            else:
+                                pass
+
+                            # Collapse identical alleles by hashing them as a fn of start,stop,sequence
+                            # But keep track of which samples are collapsed together
+                            a = Allele(start, stop, sequence)
+                            a.construct_vcf_data(record,allele_index)
+                            h = a.hash()
+
+                            if h not in alleles:
+                                alleles[h] = a
+
+                            alleles[h].add_sample(sample_name)
 
     # Throw away hashes and keep unique alleles as a list
     return list(alleles.values())
@@ -419,6 +419,7 @@ def write_paths_to_vcf(alleles:list, paths:list, output_path:str, sample_name, e
 
     with open(output_path, 'w') as file:
         file.write("##fileformat=VCFv4.2\n")
+        file.write("##FORMAT=<ID=GT,Number=1,Type=String,Description=\"The genotype of the variant\">\n")
         file.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t%s\n" % sample_name)
 
         for path in paths:
