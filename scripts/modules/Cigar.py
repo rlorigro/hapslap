@@ -48,6 +48,19 @@ is_ref_move = [
 ]
 
 
+char_is_ref_move = {
+    'M':True,   # 'M'
+    'I':False,  # 'I'
+    'D':True,   # 'D'
+    'N':True,   # 'N'
+    'S':False,  # 'S'
+    'H':False,  # 'H'
+    'P':False,  # 'P'
+    '=':True,   # '='
+    'X':True,   # 'X'
+}
+
+
 is_query_move = [
     True,   # 'M'
     True,   # 'I'
@@ -59,6 +72,19 @@ is_query_move = [
     True,   # '='
     True,   # 'X'
 ]
+
+
+char_is_query_move = {
+    'M':True,   # 'M'
+    'I':True,   # 'I'
+    'D':False,  # 'D'
+    'N':False,  # 'N'
+    'S':True,   # 'S'
+    'H':False,  # 'H'
+    'P':False,  # 'P'
+    '=':True,   # '='
+    'X':True,   # 'X'
+}
 
 
 complement = {
@@ -136,10 +162,7 @@ def get_query_coord_of_ref_coord(alignment, ref_start, ref_stop, offset_by_hardc
     # print(first_operation,first_length)
     # print(last_operation,last_length)
 
-
     for i,[cigar_ref_start,cigar_ref_stop,cigar_query_start,cigar_query_stop,operation,length] in enumerate(iterate_cigar(alignment)):
-        # TODO: debug HG00741#1#JAHALY010000028.1
-
         if i == 0 and operation == 5:
             hardclip_length = length
             # print("has hardclip: " + str(hardclip_length))
