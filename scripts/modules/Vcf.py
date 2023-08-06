@@ -172,7 +172,7 @@ class Allele:
 Given any number of VCFs, build a set of Allele objects which are merged by their hash(sequence,start,stop), retaining
 sample names for all merged alleles
 """
-def get_alleles_from_vcfs(ref_path, data_per_sample, chromosome, ref_start=None, ref_stop=None, debug=True):
+def get_alleles_from_vcfs(ref_path, data_per_sample, chromosome, ref_start=None, ref_stop=None, debug=False):
     region_string = chromosome
 
     if ref_start is not None and ref_stop is not None:
