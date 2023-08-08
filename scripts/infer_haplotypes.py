@@ -1595,7 +1595,8 @@ def infer_haplotypes(
     output_gaf_path = run_minigraph(
         output_directory=output_directory,
         gfa_path=output_gfa_path,
-        fasta_path=read_fasta_path
+        fasta_path=read_fasta_path,
+        n_threads=n_threads
     )
 
     b = time.time()

@@ -143,8 +143,6 @@ def download_regions_of_bam(regions, tsv_path, column_names, output_directory, n
             if samples is not None and sample_name not in samples:
                 continue
 
-            print(sample_name)
-
             gs_uri = df.iloc[i][column_name]
 
             # Each sample downloads its regions to its own subdirectory to prevent overwriting (filenames are by region)

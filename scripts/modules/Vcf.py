@@ -172,7 +172,7 @@ class Allele:
 Given any number of VCFs, build a set of Allele objects which are merged by their hash(sequence,start,stop), retaining
 sample names for all merged alleles
 """
-def get_alleles_from_vcfs(ref_path, data_per_sample, chromosome, ref_start=None, ref_stop=None, debug=False):
+def get_alleles_from_vcfs(ref_path, data_per_sample, chromosome, ref_start=None, ref_stop=None, debug=False, skip_incompatible=False):
     region_string = chromosome
 
     if ref_start is not None and ref_stop is not None:
@@ -256,7 +256,15 @@ def get_alleles_from_vcfs(ref_path, data_per_sample, chromosome, ref_start=None,
                             # be deleted at the end to generate haplotypes... causing issues
                             if ref_start is not None and ref_stop is not None:
                                 if start < ref_start - 1 or stop > ref_stop:
-                                    raise Exception("ERROR: VCF allele in sample %s with coords %d-%d extends out of region %s:%d-%d" % (sample_name, start,stop,chromosome,ref_start,ref_stop))
+
+                                    if not skip_incompatible:
+                                        sys.stderr.write(vcf_path)
+                                        sys.stderr.write('\n')
+                                        raise Exception("ERROR: VCF allele in sample %s with coords %d-%d extends out of region %s:%d-%d" % (sample_name, start,stop,chromosome,ref_start,ref_stop))
+                                    else:
+                                        sys.stderr.write(vcf_path)
+                                        sys.stderr.write('\n')
+                                        sys.stderr.write("WARNING: skipping VCF allele in sample %s with coords %d-%d extending out of region %s:%d-%d\n" % (sample_name, start,stop,chromosome,ref_start,ref_stop))
 
                             if sequence.strip() == "<DUP>":
                                 sequence = ref_sequence[start:start+b_length+1]
@@ -282,7 +290,7 @@ def get_alleles_from_vcfs(ref_path, data_per_sample, chromosome, ref_start=None,
     return list(alleles.values())
 
 
-def vcf_to_graph(ref_path, data_per_sample, chromosome, ref_start, ref_stop, ref_sample_name, flank_length):
+def vcf_to_graph(ref_path, data_per_sample, chromosome, ref_start, ref_stop, ref_sample_name, flank_length, skip_incompatible=False):
     ref_sequence = FastaFile(ref_path).fetch(chromosome)
 
     alleles = get_alleles_from_vcfs(
@@ -290,7 +298,8 @@ def vcf_to_graph(ref_path, data_per_sample, chromosome, ref_start, ref_stop, ref
         data_per_sample=data_per_sample,
         chromosome=chromosome,
         ref_start=ref_start,
-        ref_stop=ref_stop
+        ref_stop=ref_stop,
+        skip_incompatible=skip_incompatible
     )
 
     ref_start -= flank_length

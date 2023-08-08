@@ -99,7 +99,7 @@ def align_sequences_to_other_sequences(a_seqs:dict, b_seqs:dict, n_threads:int, 
     return pairs,lengths,results
 
 
-def run_minigraph(output_directory, gfa_path, fasta_path):
+def run_minigraph(output_directory, gfa_path, fasta_path, n_threads, args_override=None):
     output_path = os.path.join(output_directory, "reads_vs_graph.gaf")
 
     # minigraph \
@@ -109,20 +109,29 @@ def run_minigraph(output_directory, gfa_path, fasta_path):
     # reads.fasta \
     # args = ["minigraph", "-c", "-x", "lr", "-o", output_path, gfa_path, fasta_path]
 
-    args = [
-        "minigraph",
-        "-c",
-        "-g", str(10000),
-        "-k", str(14),
-        "-f", "0.25",
-        "-r", "1000,20000",
-        "-n", "3,3",
-        "-p", str(0.5),
-        # "-j", str(0.85),  # <-- this alone causes horrific slowdown in some regions, no idea why
-        "-x", "lr",
-        "-o", output_path,
-        gfa_path,
-        fasta_path]
+    if args_override is None:
+        args = [
+            "minigraph",
+            "-c",
+            "-g", str(10000),
+            "-k", str(14),
+            "-f", "0.25",
+            "-r", "1000,20000",
+            "-n", "3,3",
+            "-p", str(0.5),
+            # "-j", str(0.85),  # <-- this alone causes horrific slowdown in some regions, no idea why
+            "-x", "lr",
+            "-t", n_threads,
+            "-o", output_path,
+            gfa_path,
+            fasta_path]
+    else:
+        args = \
+            ["minigraph"] + \
+            args_override + \
+            ["-o", output_path,
+            gfa_path,
+            fasta_path]
 
     with open(output_path, 'a') as file:
         sys.stderr.write(" ".join(args)+'\n')

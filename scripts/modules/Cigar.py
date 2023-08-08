@@ -549,7 +549,6 @@ def get_haplotypes_of_region(bam_paths, chromosome, start, stop, n_threads):
     args = list()
 
     for path in bam_paths:
-        print(path)
         args.append([path, chromosome, start, stop, True])
 
     with Pool(n_threads) as pool:

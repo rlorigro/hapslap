@@ -45,7 +45,6 @@ class IterativeHistogram:
         return self.histogram
 
     def get_normalized_histogram(self):
-        total = sum(self.histogram)
         normalized_histogram = self.histogram/numpy.sum(self.histogram)
 
         return normalized_histogram
