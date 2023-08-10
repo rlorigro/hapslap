@@ -7,6 +7,9 @@ class Region:
     def __str__(self):
         return "%s_%d-%d" % (self.contig_name, self.start, self.stop)
 
+    def to_samtools_string(self):
+        return "%s:%d-%d" % (self.contig_name, self.start, self.stop)
+
 
 def iter_bed_items(path):
     with open(path, 'r') as file:

@@ -83,10 +83,36 @@ def compress_and_index_vcf(vcf_path, timeout=60*60, use_cache=False):
     return output_vcf_path
 
 
-def merge_vcfs(vcf_paths, output_path, timeout=60*60):
-    # args = ["bcftools", "merge", "-0"] + vcf_paths
-    args = ["bcftools", "merge", "-m", "none", "-0"] + vcf_paths
-    # args = ["bcftools", "merge", "-m", "none"] + vcf_paths
+def merge_vcfs(vcf_paths, output_path, force_samples=False, timeout=60*60):
+
+    if not force_samples:
+        args = ["bcftools", "merge", "-m", "none", "-0"] + vcf_paths
+    else:
+        args = ["bcftools", "merge", "-m", "none", "-0", "--force-samples"] + vcf_paths
+
+
+    sys.stderr.write(" ".join(args)+'\n')
+
+    with open(output_path, 'w') as file:
+        try:
+            p1 = subprocess.run(args, check=True, stderr=subprocess.PIPE, stdout=file, timeout=timeout)
+
+        except subprocess.CalledProcessError as e:
+            sys.stderr.write("Status: FAIL " + '\n' + (e.stderr.decode("utf8") if e.stderr is not None else "") + '\n')
+            sys.stderr.flush()
+            return None
+
+        except subprocess.TimeoutExpired as e:
+            sys.stderr.write("Status: FAIL due to timeout " + '\n' + (e.stderr.decode("utf8") if e.stderr is not None else "") + '\n')
+            sys.stderr.flush()
+            return None
+
+    return output_path
+
+
+# bcftools view [OPTIONS] file.vcf.gz [REGION […]]
+def bcftools_view(vcf_path, region_string, output_path, timeout=60*60):
+    args = ["bcftools", "view", vcf_path, region_string]
 
     sys.stderr.write(" ".join(args)+'\n')
 

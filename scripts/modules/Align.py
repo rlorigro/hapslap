@@ -121,7 +121,7 @@ def run_minigraph(output_directory, gfa_path, fasta_path, n_threads, args_overri
             "-p", str(0.5),
             # "-j", str(0.85),  # <-- this alone causes horrific slowdown in some regions, no idea why
             "-x", "lr",
-            "-t", n_threads,
+            "-t", str(n_threads),
             "-o", output_path,
             gfa_path,
             fasta_path]

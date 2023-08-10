@@ -16,11 +16,13 @@ from modules.Sequence import Sequence
 
 
 class Alignment:
-    def __init__(self, ref_name, query_name, ref_edit_distance, query_edit_distance, ref_start, ref_stop, query_start, query_stop):
+    def __init__(self, ref_name, query_name, n_delete, n_insert, n_match, n_mismatch, ref_start, ref_stop, query_start, query_stop):
         self.ref_name = ref_name
         self.query_name = query_name
-        self.ref_edit_distance = ref_edit_distance
-        self.query_edit_distance = query_edit_distance
+        self.n_delete = n_delete
+        self.n_insert = n_insert
+        self.n_match = n_match
+        self.n_mismatch = n_mismatch
         self.ref_start = ref_start
         self.ref_stop = ref_stop
         self.query_start = query_start
@@ -30,8 +32,10 @@ class Alignment:
         s = ""
         s += "ref_name:\t" + self.ref_name + '\n'
         s += "query_name:\t" + self.query_name + '\n'
-        s += "ref_edit_distance:\t" + str(self.ref_edit_distance) + '\n'
-        s += "query_edit_distance:\t" + str(self.query_edit_distance) + '\n'
+        s += "n_delete:\t" + str(self.n_delete) + '\n'
+        s += "n_insert:\t" + str(self.n_insert) + '\n'
+        s += "n_mismatch:\t" + str(self.n_mismatch) + '\n'
+        s += "n_match:\t" + str(self.n_mismatch) + '\n'
         s += "ref_start:\t" + str(self.ref_start) + '\n'
         s += "ref_stop:\t" + str(self.ref_stop) + '\n'
         s += "query_start:\t" + str(self.query_start) + '\n'
@@ -123,8 +127,9 @@ def get_bounded_cigar_data(c, l, window_start, window_stop, cigar_start, cigar_s
 
 
 class Results:
-    def __init__(self, query_coverage, query_lengths, n_alignments, n_nodes, n_edges, nodes_covered, edges_covered):
+    def __init__(self, query_coverage, identities, query_lengths, n_alignments, n_nodes, n_edges, nodes_covered, edges_covered):
         self.query_coverage = query_coverage
+        self.identities = identities
         self.query_lengths = query_lengths
         self.n_alignments = n_alignments
         self.n_nodes = n_nodes
@@ -225,6 +230,12 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
             tokens = line.strip().split('\t')
             query_name = tokens[0]
 
+            # if "NA20129" not in query_name:
+            #     continue
+
+            # print()
+            # print(query_name)
+
             # Column 5 (0-based) is the path column in a GAF file
             # It can be a forward or reverse alignment, so we will temporarily interpret them all as forward alignments
             path = None
@@ -289,8 +300,10 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
             query_cigar_start = int(tokens[2])
             query_cigar_stop = 0
 
-            ref_cost = 0
-            query_cost = 0
+            n_match = 0
+            n_mismatch = 0
+            n_insert = 0
+            n_delete = 0
 
             min_query_index = sys.maxsize
             max_query_index = -1
@@ -300,6 +313,7 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
                 query_cigar_stop = query_cigar_start + l*char_is_query_move[c]
 
                 # print(l,c,is_reverse,query_cigar_start,query_cigar_stop,query_start,query_stop)
+                # print("=", n_match, "X", n_mismatch, "I", n_insert, "D", n_delete)
 
                 # Flip window bounds if it's a reverse alignment
                 if is_reverse:
@@ -307,12 +321,7 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
                     ref_cigar_stop = ref_cigar_start
                     ref_cigar_start = t
 
-                is_match = True
-                # if c == 'X' or c == 'D' or c == 'I':
-                if c == 'D' or c == 'I':
-                    is_match = False
-
-                c, min_index, max_index = get_bounded_cigar_data(
+                cost, min_index, max_index = get_bounded_cigar_data(
                     c=c,
                     l=l,
                     window_start=query_start,
@@ -330,8 +339,17 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
                 if max_index is not None and max_index > max_query_index:
                     max_query_index = max_index
 
-                if not is_match:
-                    query_cost += c
+                if c == "D":
+                    n_delete += cost
+
+                if c == "I":
+                    n_insert += cost
+
+                if c == "X":
+                    n_mismatch += cost
+
+                if c == "=":
+                    n_match += cost
 
                 # Unflip window bounds
                 if is_reverse:
@@ -347,8 +365,10 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
                 a = Alignment(
                     ref_name="ref",
                     query_name=query_name,
-                    ref_edit_distance=ref_cost,
-                    query_edit_distance=query_cost,
+                    n_delete=n_delete,
+                    n_insert=n_insert,
+                    n_match=n_match,
+                    n_mismatch=n_mismatch,
                     ref_start=None,
                     ref_stop=None,
                     query_start=min_query_index,
@@ -359,37 +379,68 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
                 # print(a)
 
                 alignments[query_name].append(a)
-                ref_distance += ref_cost
-
-    # Once the alignment blocks are grouped by sample, they need to be sorted and overlap needs to be subtracted.
-    # Edit distance is not considered for overlap subtraction, which is crude, but easier to deal with for now.
-    # Worst case, a near-boundary overlapping non-match gets double counted, reducing the score
-    query_coverage = defaultdict(int)
-    for query_name in alignments:
-        prev_stop = None
-        for a in sorted(alignments[query_name], key=lambda x: x.query_start):
-            query_coverage[query_name] += a.query_stop - a.query_start + 1 - a.query_edit_distance
-            if prev_stop is not None:
-                overlap = prev_stop - a.query_start
-                if overlap > 0:
-                    query_coverage[query_name] -= overlap
-
-            prev_stop = a.query_stop
-
-    print(vcf_path)
-    for name,coverage in query_coverage.items():
-        l = len(ref_sequences[name]) - (flank_length - buffer_length)*2 + 1
-        print(name,coverage,l,float(coverage)/float(l))
-
-    print(ref_distance)
-    print()
 
     query_lengths = dict()
     for s in ref_sequences.values():
         query_lengths[s.name] = len(s) - (flank_length - buffer_length)*2 + 1
 
+    # Once the alignment blocks are grouped by sample, they need to be sorted and overlap needs to be subtracted.
+    # Edit distance is not considered for overlap subtraction, which is crude, but easier to deal with for now.
+    # Worst case, a near-boundary overlapping non-match gets double counted, reducing the score
+    query_coverage = defaultdict(float)
+    for query_name in alignments:
+        prev_stop = None
+        bases_covered = 0
+
+        for a in sorted(alignments[query_name], key=lambda x: x.query_start):
+            # The query is only not covered in an alignment if there is an insert (ignoring mismatches)
+            bases_covered += a.query_stop - a.query_start + 1 - a.n_insert
+            if prev_stop is not None:
+                overlap = prev_stop - a.query_start
+                if overlap > 0:
+                    bases_covered -= overlap
+
+            prev_stop = a.query_stop
+
+        l = query_lengths[query_name]
+
+        if l > 0:
+            query_coverage[query_name] = float(bases_covered) / float(l)
+        else:
+            query_coverage[query_name] = 1
+
+
+    print(vcf_path)
+    print("identities")
+
+    identities = defaultdict(float)
+    for query_name in alignments.keys():
+        n_match = 0
+        n_mismatch = 0
+        n_insert = 0
+        n_delete = 0
+
+        for a in alignments[query_name]:
+            n_match += a.n_match
+            n_mismatch += a.n_mismatch
+            n_insert += a.n_insert
+            n_delete += a.n_delete
+
+        identity = float(n_match) / float(n_match + n_mismatch + n_insert + n_delete)
+        print(query_name, identity)
+        identities[query_name] = identity
+
+    print("coverages")
+    for name,coverage in query_coverage.items():
+        print(name,coverage)
+
+    print()
+
+    print(type(identities))
+
     results = Results(
         query_coverage=query_coverage,
+        identities=identities,
         query_lengths=query_lengths,
         n_alignments=n_alignments,
         n_nodes=n_nodes,
@@ -397,6 +448,8 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
         nodes_covered=len(nodes_covered),
         edges_covered=len(edges_covered)
     )
+
+    print(type(results.identities))
 
     print(str(results))
 
@@ -447,7 +500,9 @@ def evaluate_directories(input_directories: list, ref_path, tsv_path, column_nam
         for name in sorted(os.listdir(input_directory)):
             path = os.path.join(input_directory, name)
 
+            # /home/ryan/data/test_hapslap/results/competitors/truvari/chr20_1349694-1351840.vcf.gz
             # if "16275838-16277739" not in path and "1893503-1907430" not in path:
+            # if "1349694-1351840" not in path:
             #     continue
 
             if path.endswith(".vcf.gz") or path.endswith(".vcf"):
@@ -455,13 +510,17 @@ def evaluate_directories(input_directories: list, ref_path, tsv_path, column_nam
                 region_strings[region_string].add(i)
 
     identities_per_dir = [IterativeHistogram(start=0.0,stop=1.0,n_bins=100) for x in range(len(input_directories))]
+    query_coverages_per_dir = [IterativeHistogram(start=0.0,stop=1.0,n_bins=100) for x in range(len(input_directories))]
     node_coverage_per_dir = [IterativeHistogram(start=0.0,stop=1.0,n_bins=100,unbounded_lower_bin=True) for x in range(len(input_directories))]
     edge_coverage_per_dir = [IterativeHistogram(start=0.0,stop=1.0,n_bins=100,unbounded_lower_bin=True) for x in range(len(input_directories))]
     n_nodes_per_dir = [IterativeHistogram(start=0.0,stop=800,n_bins=100,unbounded_upper_bin=True) for x in range(len(input_directories))]
     n_alignments_per_dir = [IterativeHistogram(start=0.0,stop=400,n_bins=100,unbounded_upper_bin=True) for x in range(len(input_directories))]
 
     # Iterate the regions, extract the ref haplotypes only once for each, and evaluate all input dirs for each
-    for region_string,input_set in region_strings.items():
+    for r,[region_string,input_set] in enumerate(region_strings.items()):
+        # if r == 4:
+        #     break
+
         print(region_string, input_set)
 
         if len(input_set) != len(input_directories):
@@ -486,15 +545,16 @@ def evaluate_directories(input_directories: list, ref_path, tsv_path, column_nam
                 n_threads=n_threads)
 
             for name in results.iter_query_names():
-                identity = results.get_percent_query_coverage(name)
-                node_coverage = float(results.nodes_covered) / float(results.n_nodes) if results.n_nodes > 0 else 1.0
-                edge_coverage = float(results.edges_covered) / float(results.n_edges) if results.n_edges > 0 else 1.0
+                print(results.identities)
+                identities_per_dir[i].update(results.identities[name])
+                query_coverages_per_dir[i].update(results.query_coverage[name])
 
-                identities_per_dir[i].update(identity)
-                node_coverage_per_dir[i].update(node_coverage)
-                edge_coverage_per_dir[i].update(edge_coverage)
-                n_nodes_per_dir[i].update(results.n_nodes)
-                n_alignments_per_dir[i].update(results.n_alignments)
+            node_coverage = float(results.nodes_covered) / float(results.n_nodes) if results.n_nodes > 0 else 1.0
+            edge_coverage = float(results.edges_covered) / float(results.n_edges) if results.n_edges > 0 else 1.0
+            node_coverage_per_dir[i].update(node_coverage)
+            edge_coverage_per_dir[i].update(edge_coverage)
+            n_nodes_per_dir[i].update(results.n_nodes)
+            n_alignments_per_dir[i].update(results.n_alignments)
 
     for h,histogram in enumerate(identities_per_dir):
         label = os.path.basename(input_directories[h])
@@ -502,19 +562,30 @@ def evaluate_directories(input_directories: list, ref_path, tsv_path, column_nam
         x = histogram.get_bin_centers()
         y = 1 - numpy.cumsum(histogram.get_normalized_histogram())
         axes[0][0].plot(x,y,alpha=0.6, color="C" + str(h), label=label)
-        axes[0][0].set_xlabel("identities")
+        axes[0][0].set_xlabel("Alignment identities")
         axes[0][0].set_ylabel("Cumulative density")
         axes[0][0].set_xlim([-0.05,1.05])
         axes[0][0].invert_xaxis()
+
+    for h,histogram in enumerate(query_coverages_per_dir):
+        label = os.path.basename(input_directories[h])
+
+        x = histogram.get_bin_centers()
+        y = 1 - numpy.cumsum(histogram.get_normalized_histogram())
+        axes[0][1].plot(x,y,alpha=0.6, color="C" + str(h), label=label)
+        axes[0][1].set_xlabel("Haplotype portion covered")
+        axes[0][1].set_ylabel("Cumulative density")
+        axes[0][1].set_xlim([-0.05,1.05])
+        axes[0][1].invert_xaxis()
 
     for h,histogram in enumerate(n_nodes_per_dir):
         label = os.path.basename(input_directories[h])
 
         x = histogram.get_bin_centers()
         y = numpy.cumsum(histogram.get_normalized_histogram())
-        axes[0][2].plot(x,y,alpha=0.6, color="C" + str(h), label=label)
-        axes[0][2].set_xlabel("n_nodes")
-        axes[0][2].set_ylabel("Cumulative density")
+        axes[1][2].plot(x,y,alpha=0.6, color="C" + str(h), label=label)
+        axes[1][2].set_xlabel("# Nodes in graph")
+        axes[1][2].set_ylabel("Cumulative density")
 
     for h,histogram in enumerate(node_coverage_per_dir):
         label = os.path.basename(input_directories[h])
@@ -522,7 +593,7 @@ def evaluate_directories(input_directories: list, ref_path, tsv_path, column_nam
         x = histogram.get_bin_centers()
         y = 1 - numpy.cumsum(histogram.get_normalized_histogram())
         axes[1][0].plot(x,y,alpha=0.6, color="C" + str(h), label=label)
-        axes[1][0].set_xlabel("node_coverage")
+        axes[1][0].set_xlabel("Nodes (alleles) covered")
         axes[1][0].set_ylabel("Cumulative density")
         axes[1][0].set_xlim([-0.05,1.05])
         axes[1][0].invert_xaxis()
@@ -533,7 +604,7 @@ def evaluate_directories(input_directories: list, ref_path, tsv_path, column_nam
         x = histogram.get_bin_centers()
         y = 1 - numpy.cumsum(histogram.get_normalized_histogram())
         axes[1][1].plot(x,y,alpha=0.6, color="C" + str(h), label=label)
-        axes[1][1].set_xlabel("edge_coverage")
+        axes[1][1].set_xlabel("Edges covered")
         axes[1][1].set_ylabel("Cumulative density")
         axes[1][1].set_xlim([-0.05,1.05])
         axes[1][1].invert_xaxis()
@@ -543,11 +614,11 @@ def evaluate_directories(input_directories: list, ref_path, tsv_path, column_nam
 
         x = histogram.get_bin_centers()
         y = numpy.cumsum(histogram.get_normalized_histogram())
-        axes[0][1].plot(x,y,alpha=0.6, color="C" + str(h), label=label)
-        axes[0][1].set_xlabel("n_alignments")
-        axes[0][1].set_ylabel("Cumulative density")
+        axes[0][2].plot(x,y,alpha=0.6, color="C" + str(h), label=label)
+        axes[0][2].set_xlabel("# Alignments")
+        axes[0][2].set_ylabel("Cumulative density")
 
-    axes[1][2].axis("off")
+    # axes[1][2].axis("off")
 
     fig.set_size_inches(14,8)
     axes[0][0].legend()
