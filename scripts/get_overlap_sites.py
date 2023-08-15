@@ -1,3 +1,4 @@
+from modules.Vcf import get_alleles_from_vcfs
 from collections import defaultdict
 import sys
 import os
@@ -12,50 +13,46 @@ from modules.Bed import iter_bed_items
 def parse_region_string(s):
     tokens = re.split(r'[{:\-}]+', s.strip())
     chromosome = tokens[0]
-    start = int(tokens[1])
-    stop = int(tokens[2])
+
+    start = None
+    stop = None
+    if len(tokens) > 1:
+        start = int(tokens[1])
+        stop = int(tokens[2])
 
     return chromosome, start, stop
 
 
-def get_overlap_sites(output_dir, region_string, vcfs_per_sample, bed_path, bed_name, padding, max_interval_length):
+def get_overlap_sites(output_dir, region_string, data_per_sample, bed_path, bed_name, padding, max_interval_length):
     # The IntervalGraph data structure has no concept of chromosomes, only coordinates, so chr must be factored out
     intervals_per_chromosome = defaultdict(list)
 
-    ref_start = None
-    ref_stop = None
+    # TODO: test with empty region string?? or None?
+    chromosome, start, stop = parse_region_string(region_string)
 
-    if ref_start is not None and ref_stop is not None:
-        region_string += ":" + str(ref_start) + "-" + str(ref_stop)
+    alleles = get_alleles_from_vcfs(
+        None,
+        data_per_sample,
+        chromosome,
+        ref_start=start,
+        ref_stop=stop,
+        debug=False,
+        skip_incompatible=False,
+        coord_only=True)
 
-    for sample_name in vcfs_per_sample:
-        vcf_path = vcfs_per_sample[sample_name]
+    for allele in alleles:
+        # Bring coords into BED space (1-based) :(
+        allele.stop += 1
+        allele.start += 1
 
-        with open(vcf_path, 'rb') as file:
-            vcf = VCFReader(file)
+        if allele.stop - allele.start > max_interval_length:
+            continue
 
-            try:
-                records = vcf.fetch(region_string)
-            except ValueError:
-                print("WARNING: Skipping sample because has no VCF entries: " + sample_name)
-                continue
-
-            for record in records:
-                chromosome = record.CHROM
-                start = record.affected_start
-                stop = record.affected_end
-
-                if 'END' in record.INFO:
-                    stop = record.sv_end
-
-                if stop - start > max_interval_length:
-                    continue
-
-                intervals_per_chromosome[chromosome].append((start, stop+padding, sample_name))
+        intervals_per_chromosome[chromosome].append((allele.start, allele.stop+padding, allele.samples))
 
     if bed_path is not None:
-        for chr,start,stop in iter_bed_items(bed_path):
-            intervals_per_chromosome[chr].append((start, stop+padding, bed_name))
+        for chromosome,start,stop in iter_bed_items(bed_path):
+            intervals_per_chromosome[chromosome].append((start, stop+padding, bed_name))
 
     output_path = os.path.join(output_dir,"sites.bed")
 
@@ -191,7 +188,7 @@ def test_locally():
         "NA21309"
     ]
 
-    data_per_sample = dict()
+    data_per_sample = defaultdict(dict)
 
     for filename in os.listdir(input_directory):
         path = os.path.join(input_directory, filename)
@@ -199,7 +196,7 @@ def test_locally():
         for name in sample_names:
             if name in filename:
                 if filename.endswith(".vcf.gz"):
-                    data_per_sample[name] = path
+                    data_per_sample[name]["vcf"] = path
 
     output_dir = "/home/ryan/data/test_hapslap/test_regions/test_refactor"
 

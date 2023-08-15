@@ -1,6 +1,6 @@
 import ortools.sat.python.cp_model
 
-from modules.Vcf import vcf_to_graph,write_paths_to_vcf,remove_empty_nodes_from_variant_graph,merge_vcfs_in_directory
+from modules.Vcf import vcf_to_graph,write_paths_to_vcf,remove_empty_nodes_from_variant_graph,merge_vcfs_in_directory,write_graph_to_gfa,write_node_csv
 from modules.Align import run_minimap2,run_minigraph,run_mashmap,run_minimap2_on_read_subset
 from modules.Cigar import iterate_cigar,cigar_index_to_char,is_ref_move
 from modules.IterativeHistogram import IterativeHistogram
@@ -39,15 +39,6 @@ import pysam
 
 import matplotlib
 matplotlib.use('Agg')
-
-
-def write_graph_to_gfa(output_path, graph, alleles):
-    with open(output_path, 'w') as gfa_file:
-        for allele_index in graph.nodes:
-            gfa_file.write("S\t%s\t%s\n" % (str(allele_index),alleles[allele_index].sequence))
-
-        for e in graph.edges:
-            gfa_file.write("L\t%s\t+\t%s\t+\t0M\n" % (str(e[0]), str(e[1])))
 
 
 def plot_graph(
@@ -1464,8 +1455,6 @@ def infer_haplotypes(
 
     tokenator = GoogleToken()
 
-    csv_path = os.path.join(output_directory, "nodes.csv")
-
     # TODO: make this a function of the actual reference version used
     ref_sample_name = "ref"
 
@@ -1476,7 +1465,8 @@ def infer_haplotypes(
         ref_start=ref_start,
         ref_stop=ref_stop,
         ref_sample_name=ref_sample_name,
-        flank_length=flank_length
+        flank_length=flank_length,
+        skip_incompatible=True
     )
 
     if len(alleles) == 1:
@@ -1500,25 +1490,10 @@ def infer_haplotypes(
 
     print("ref_id_offset:", ref_id_offset)
 
+    csv_path = os.path.join(output_directory, "nodes.csv")
+    write_node_csv(csv_path, ref_sample_name, alleles)
+
     output_gfa_path = os.path.join(output_directory, "graph.gfa")
-
-    sample_color = "#bebebe"
-    ref_color = "#6e6e6e"
-
-    # Write a csv that keeps track of ref coords, is_ref
-    with open(csv_path, 'w') as csv_file:
-        csv_file.write("id,ref_start,ref_stop,is_ref,color\n")
-
-        for allele_index,allele in enumerate(alleles):
-            color = sample_color
-
-            is_ref = False
-            if allele_index >= ref_id_offset:
-                color = ref_color
-                is_ref = True
-
-            csv_file.write(','.join(list(map(str,[allele_index,allele.start,allele.stop,int(is_ref),color]))))
-            csv_file.write('\n')
 
     # Write the GFA
     write_graph_to_gfa(output_path=output_gfa_path, graph=graph, alleles=alleles)

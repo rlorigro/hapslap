@@ -409,7 +409,6 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
         else:
             query_coverage[query_name] = 1
 
-
     print(vcf_path)
     print("identities")
 
@@ -434,10 +433,6 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
     for name,coverage in query_coverage.items():
         print(name,coverage)
 
-    print()
-
-    print(type(identities))
-
     results = Results(
         query_coverage=query_coverage,
         identities=identities,
@@ -448,10 +443,6 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
         nodes_covered=len(nodes_covered),
         edges_covered=len(edges_covered)
     )
-
-    print(type(results.identities))
-
-    print(str(results))
 
     return results
 
@@ -557,7 +548,8 @@ def evaluate_directories(input_directories: list, ref_path, tsv_path, column_nam
             n_alignments_per_dir[i].update(results.n_alignments)
 
     for h,histogram in enumerate(identities_per_dir):
-        label = os.path.basename(input_directories[h])
+        label = input_directories[h]
+        label = label.strip('/').split('/')[-1]
 
         x = histogram.get_bin_centers()
         y = 1 - numpy.cumsum(histogram.get_normalized_histogram())

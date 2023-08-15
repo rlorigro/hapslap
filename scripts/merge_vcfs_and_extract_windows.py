@@ -57,7 +57,7 @@ def main():
     ]
 
     output_directory = "/home/ryan/data/test_hapslap/results/competitors/sniffles_default/merged"
-    output_filename = "hprc_47.vcf.gz"
+    output_filename = "hprc_47.vcf"
 
     if not os.path.exists(output_directory):
         os.makedirs(output_directory)
@@ -74,8 +74,13 @@ def main():
         os.makedirs(output_subdirectory)
 
     for region in regions:
-        output_path = os.path.join(output_subdirectory, str(region) + ".vcf.gz")
-        bcftools_view(vcf_path=merged_vcf_path, region_string=region.to_samtools_string(), output_path=output_path)
+        output_path = os.path.join(output_subdirectory, str(region) + ".vcf")
+
+        print()
+        print(output_path)
+        output_path = bcftools_view(vcf_path=merged_vcf_path, region_string=region.to_samtools_string(), output_path=output_path)
+        print(output_path)
+        compressed_vcf_path = compress_and_index_vcf(vcf_path=output_path)
 
 
 if __name__ == "__main__":

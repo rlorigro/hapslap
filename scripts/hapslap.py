@@ -119,7 +119,7 @@ def run_hapslap(
         n_threads=n_threads,
         output_directory=output_directory,
         other_args=sv_caller_args,
-        bed_path=tandem_bed_path
+        bed_path=None   # DO NOT use tandem bed path because it doesn't improve performance
     )
 
     data_per_sample = defaultdict(dict)
@@ -133,7 +133,7 @@ def run_hapslap(
         bed_path = get_overlap_sites(
             output_dir=output_directory,
             region_string=region_string,
-            vcfs_per_sample=vcfs_per_sample,
+            data_per_sample=data_per_sample,
             bed_path=tandem_bed_path,
             bed_name="tandems",
             padding=interval_padding,
@@ -283,7 +283,6 @@ if __name__ == "__main__":
         type=str,
         help="Output directory which will be created (and must not exist)"
     )
-
 
     args = parser.parse_args()
 

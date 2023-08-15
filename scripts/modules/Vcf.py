@@ -16,6 +16,34 @@ from pysam import FastaFile
 from vcf import VCFReader
 
 
+def write_graph_to_gfa(output_path, graph, alleles):
+    with open(output_path, 'w') as gfa_file:
+        for allele_index in graph.nodes:
+            gfa_file.write("S\t%s\t%s\n" % (str(allele_index),alleles[allele_index].sequence))
+
+        for e in graph.edges:
+            gfa_file.write("L\t%s\t+\t%s\t+\t0M\n" % (str(e[0]), str(e[1])))
+
+
+def write_node_csv(csv_path, ref_sample_name, alleles):
+    sample_color = "#0592BA"
+    ref_color = "#6e6e6e"
+
+    # Write a csv that keeps track of ref coords, is_ref
+    with open(csv_path, 'w') as csv_file:
+        csv_file.write("id,ref_start,ref_stop,is_ref,color\n")
+
+        for allele_index,allele in enumerate(alleles):
+            color = sample_color
+
+            is_ref = ref_sample_name in allele.samples
+            if is_ref:
+                color = ref_color
+
+            csv_file.write(','.join(list(map(str,[allele_index,allele.start,allele.stop,int(is_ref),color]))))
+            csv_file.write('\n')
+
+
 def decompress_vcf(vcf_path, timeout=60*60, use_cache=False):
     args = ["bgzip", "-d", vcf_path]
 
@@ -89,7 +117,6 @@ def merge_vcfs(vcf_paths, output_path, force_samples=False, timeout=60*60):
         args = ["bcftools", "merge", "-m", "none", "-0"] + vcf_paths
     else:
         args = ["bcftools", "merge", "-m", "none", "-0", "--force-samples"] + vcf_paths
-
 
     sys.stderr.write(" ".join(args)+'\n')
 
@@ -198,13 +225,15 @@ class Allele:
 Given any number of VCFs, build a set of Allele objects which are merged by their hash(sequence,start,stop), retaining
 sample names for all merged alleles
 """
-def get_alleles_from_vcfs(ref_path, data_per_sample, chromosome, ref_start=None, ref_stop=None, debug=False, skip_incompatible=False):
+def get_alleles_from_vcfs(ref_path, data_per_sample, chromosome, ref_start=None, ref_stop=None, debug=False, skip_incompatible=False, coord_only=False):
     region_string = chromosome
 
     if ref_start is not None and ref_stop is not None:
         region_string += ":" + str(ref_start) + "-" + str(ref_stop)
 
-    ref_sequence = FastaFile(ref_path).fetch(chromosome)
+    ref_sequence = ""
+    if not coord_only:
+        ref_sequence = FastaFile(ref_path).fetch(chromosome)
 
     alleles = dict()
 
@@ -268,14 +297,12 @@ def get_alleles_from_vcfs(ref_path, data_per_sample, chromosome, ref_start=None,
 
                         if allele_index != 0:
                             l = len(record.alleles[0]) if record.alleles[0] != 'N' else 0
-                            not_insert = (l >= b_length)
+                            is_insert = (l < b_length)
 
                             # We are sorting by ref coordinates, so we use the ref allele start/stop to keep track of
                             # where the alt allele will be substituted
                             start = int(record.start)
-                            stop = start + l + int(not_insert)
-
-                            sequence = str(record.alleles[allele_index])
+                            stop = start + l
 
                             # Occasionally the region can be cut wrong, e.g. directly through a deletion variant,
                             # which means that the graph will contain edges in the flanking regions, which will
@@ -292,20 +319,33 @@ def get_alleles_from_vcfs(ref_path, data_per_sample, chromosome, ref_start=None,
                                         sys.stderr.write('\n')
                                         sys.stderr.write("WARNING: skipping VCF allele in sample %s with coords %d-%d extending out of region %s:%d-%d\n" % (sample_name, start,stop,chromosome,ref_start,ref_stop))
 
-                            if sequence.strip() == "<DUP>":
-                                sequence = ref_sequence[start:start+b_length+1]
-                            elif sequence.strip() == "<INV>":
-                                sequence = ref_sequence[start:start+b_length+1][::-1]
-                            elif sequence == 'N':
-                                sequence = ''
-                            else:
-                                pass
+                            sequence = ""
+                            if not coord_only:
+                                sequence = str(record.alleles[allele_index])
+                                if is_insert:
+                                    sequence = sequence[1:]
+                                    start += 1
+                                    stop += 1
+                                if sequence.strip() == "<DUP>":
+                                    sequence = ref_sequence[start+1:start+b_length+1]
+                                    start += 1
+                                    stop += 1
+                                elif sequence.strip() == "<INV>":
+                                    sequence = ref_sequence[start+1:start+b_length+1][::-1]
+                                    start += 1
+                                    stop += 1
+                                elif sequence == 'N':
+                                    sequence = ''
+                                else:
+                                    pass
 
                             # Collapse identical alleles by hashing them as a fn of start,stop,sequence
                             # But keep track of which samples are collapsed together
                             a = Allele(start, stop, sequence)
-                            a.construct_vcf_data(record,allele_index)
                             h = a.hash()
+
+                            if not coord_only:
+                                a.construct_vcf_data(record,allele_index)
 
                             if h not in alleles:
                                 alleles[h] = a
@@ -427,28 +467,6 @@ def remove_empty_nodes_from_variant_graph(graph, alleles):
     return graph, edge_to_deletion_index
 
 
-# def get_data(record, n, alleles):
-#
-#     # CHROM  POS    ID          REF  ALT  QUAL  FILTER  INFO                     FORMAT       NA00001
-#     # 20     14370  rs6054257   G    A    29    PASS    NS=3;DP=14;AF=0.5;DB;H2  GT:GQ:DP:HQ  0|0:48:1:51,51
-#     alt_index = alleles[n].alt_index
-#
-#     # Summarize the data and hash by pos + data
-#     data = (
-#         str(record.CHROM),
-#         str(record.POS),
-#         str(record.ID),
-#         str(record.REF),
-#         str(record.ALT[alt_index]),
-#         str(record.QUAL),
-#         "PASS",
-#         '',
-#         "GT",
-#         "0/1")
-#
-#     return data
-
-
 def write_paths_to_vcf(alleles:list, paths:list, output_path:str, sample_name, edge_to_deletion_index=None, compress_and_index=True):
     records_per_position = defaultdict(set)
 
@@ -544,7 +562,13 @@ def test_vcf():
     )
 
     # Delete empty nodes this time
-    graph_2, edge_to_deletion_index = remove_empty_nodes_from_variant_graph(graph, alleles)
+    graph_2, edge_to_deletion_index = remove_empty_nodes_from_variant_graph(graph_2, alleles_2)
+
+    csv_path = os.path.join(data_directory, "test_graph_nodes.csv")
+    write_node_csv(csv_path, ref_sample_name, alleles)
+
+    gfa_path = os.path.join(data_directory, "test_graph.gfa")
+    write_graph_to_gfa(gfa_path, graph_2, alleles_2)
 
     for item in edge_to_deletion_index.items():
         print(item)
