@@ -1498,6 +1498,9 @@ def infer_haplotypes(
     # Write the GFA
     write_graph_to_gfa(output_path=output_gfa_path, graph=graph, alleles=alleles)
 
+    sample_color = "#0592BA"
+    ref_color = "#6e6e6e"
+
     # Plot the graph
     plot_path = os.path.join(output_directory, "dag.png")
     plot_graph(
