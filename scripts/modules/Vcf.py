@@ -297,7 +297,12 @@ def get_alleles_from_vcfs(ref_path, data_per_sample, chromosome, ref_start=None,
 
                         if allele_index != 0:
                             l = len(record.alleles[0]) if record.alleles[0] != 'N' else 0
-                            is_insert = (l < b_length)
+
+                            # Canonical inserts have N or single letter ref alleles.
+                            # Substitution operations may have any number of bases in the REF allele
+                            is_insert = (l < b_length) and l <= 1
+
+                            is_long_substitution = b_length > 1 and l > 1
 
                             # We are sorting by ref coordinates, so we use the ref allele start/stop to keep track of
                             # where the alt allele will be substituted
@@ -323,6 +328,10 @@ def get_alleles_from_vcfs(ref_path, data_per_sample, chromosome, ref_start=None,
                             if not coord_only:
                                 sequence = str(record.alleles[allele_index])
                                 if is_insert:
+                                    sequence = sequence[1:]
+                                    start += 1
+                                    stop += 1
+                                if is_long_substitution:
                                     sequence = sequence[1:]
                                     start += 1
                                     stop += 1

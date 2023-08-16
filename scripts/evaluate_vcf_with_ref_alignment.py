@@ -536,7 +536,6 @@ def evaluate_directories(input_directories: list, ref_path, tsv_path, column_nam
                 n_threads=n_threads)
 
             for name in results.iter_query_names():
-                print(results.identities)
                 identities_per_dir[i].update(results.identities[name])
                 query_coverages_per_dir[i].update(results.query_coverage[name])
 
