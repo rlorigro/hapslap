@@ -1426,7 +1426,6 @@ def write_full_haplotypes_to_vcf(chromosome, ref_start, ref_stop, ref_path, solu
         gts = list()
         for sample_name,path_ids in sorted(path_ids_per_sample.items(), key=lambda x: x[0]):
             sample_indexes = [id_to_sequence_index[x]+1 for x in path_ids if x in id_to_sequence_index]
-            print(sample_name, path_ids, sample_indexes)
 
             if len(sample_indexes) == 0:
                 gts.append("0/0")
@@ -1498,7 +1497,7 @@ def write_full_candidate_haplotypes_to_vcf(chromosome, ref_start, ref_stop, ref_
 
         gts = list()
         for sample_name,path_ids in sorted(path_ids_per_sample.items(), key=lambda x: x[0]):
-            sample_indexes = [id_to_sequence_index[x] for x in path_ids if x in id_to_sequence_index]
+            sample_indexes = [id_to_sequence_index[x]+1 for x in path_ids if x in id_to_sequence_index]
 
             if len(sample_indexes) == 0:
                 gts.append("0/0")
