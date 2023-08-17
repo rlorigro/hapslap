@@ -1376,7 +1376,7 @@ def write_path_assignments_to_fasta(solution, sample_id_map, paths, alleles, out
             sample_name = sample_id_map.get_name(sample_id)
             sequence_name = sample_name + "_" + str(counter[sample_id])
 
-            file.write(">" + sequence_name)
+            file.write(">" + sequence_name + " id:" + str(path_id) + " length:"+str(sum(len(alleles[i].sequence) for i in paths.get_path(path_id))))
             file.write("\n")
             for i in paths.get_path(path_id):
                 file.write(alleles[i].sequence)
@@ -1384,14 +1384,13 @@ def write_path_assignments_to_fasta(solution, sample_id_map, paths, alleles, out
             file.write("\n")
 
 
-def write_full_haplotypes_to_vcf(chromosome, ref_start, ref_stop, ref_path, solution, sample_id_map, ref_name, paths, alleles, output_directory):
+def write_full_haplotypes_to_vcf(chromosome, ref_start, ref_stop, ref_path, solution, sample_id_map, paths, alleles, output_directory):
     output_path = os.path.join(output_directory, "assigned_haplotypes.vcf")
 
     path_ids_per_sample = defaultdict(list)
     id_to_sequence_index = dict()
     sequences = list()
 
-    region_string = chromosome + ":" + str(ref_start) + "-" + str(ref_stop)
     chromosome_sequence = FastaFile(ref_path).fetch(chromosome)
     ref_sequence = chromosome_sequence[ref_start:ref_stop]
 
@@ -1406,6 +1405,7 @@ def write_full_haplotypes_to_vcf(chromosome, ref_start, ref_stop, ref_path, solu
         path_ids_per_sample[sample_name].append(path_id)
 
         if path_id not in id_to_sequence_index:
+
             sequence = ""
             for i in paths.get_path(path_id):
                 sequence += alleles[i].sequence
@@ -1414,6 +1414,82 @@ def write_full_haplotypes_to_vcf(chromosome, ref_start, ref_stop, ref_path, solu
                 # path_id --> sequence_index
                 id_to_sequence_index[path_id] = len(sequences)
                 sequences.append(sequence)
+                print("ADDING path to alt alleles. path=%d alt=%d length=%d" % (path_id, id_to_sequence_index[path_id], len(sequence)))
+            else:
+                print("SKIPPING sequence identical to reference with path ID: " + str(path_id) + " length " + str(len(sequence)))
+
+    with open(output_path, 'w') as file:
+        file.write("##fileformat=VCFv4.2\n")
+        file.write("##FORMAT=<ID=GT,Number=1,Type=String,Description=\"The genotype of the variant\">\n")
+        file.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + '\t'.join(sorted(path_ids_per_sample.keys())))
+
+        gts = list()
+        for sample_name,path_ids in sorted(path_ids_per_sample.items(), key=lambda x: x[0]):
+            sample_indexes = [id_to_sequence_index[x]+1 for x in path_ids if x in id_to_sequence_index]
+            print(sample_name, path_ids, sample_indexes)
+
+            if len(sample_indexes) == 0:
+                gts.append("0/0")
+            elif len(sample_indexes) == 1:
+                gts.append("0/" + str(sample_indexes[0]))
+            elif len(sample_indexes) == 2:
+                gts.append(str(sample_indexes[0]) + "/" + str(sample_indexes[1]))
+            else:
+                raise Exception("ERROR: too many alleles specified by sample: " + sample_name)
+
+        prefix = chromosome_sequence[ref_start-1]
+
+        file.write('\n')
+        file.write(chromosome)                      # CHROM
+        file.write('\t')
+        file.write(str(ref_start))                  # POS
+        file.write('\t')
+        file.write("hapslap_" + uuid4().hex)        # ID
+        file.write('\t')
+        file.write(ref_sequence)                    # REF
+        file.write('\t')
+        file.write(','.join([prefix + s for s in sequences]))             # ALT
+        file.write('\t')
+        file.write("60")                            # QUAL
+        file.write('\t')
+        file.write("PASS")                          # FILTER
+        file.write('\t')
+        file.write(".")                             # INFO
+        file.write('\t')
+        file.write("GT")                            # FORMAT
+        file.write('\t')
+        file.write('\t'.join(gts))                  # all SAMPLEs
+
+    compress_and_index_vcf(output_path)
+
+
+def write_full_candidate_haplotypes_to_vcf(chromosome, ref_start, ref_stop, ref_path, paths, alleles, output_directory):
+    output_path = os.path.join(output_directory, "candidate_haplotypes.vcf")
+
+    path_ids_per_sample = defaultdict(list)
+    id_to_sequence_index = dict()
+    sequences = list()
+
+    chromosome_sequence = FastaFile(ref_path).fetch(chromosome)
+    ref_sequence = chromosome_sequence[ref_start:ref_stop]
+
+    for path_id in paths.ids():
+        sample_name = str(path_id)
+
+        # Sample --> path_id
+        path_ids_per_sample[sample_name].append(path_id)
+
+        if path_id not in id_to_sequence_index:
+            sequence = ""
+            for i in paths.get_path(path_id):
+                sequence += alleles[i].sequence
+
+            if sequence != ref_sequence:
+                # path_id --> sequence_index
+                id_to_sequence_index[path_id] = len(sequences)
+                sequences.append(sequence)
+            else:
+                print("SKIPPING sequence identical to reference with path ID: " + str(path_id))
 
     with open(output_path, 'w') as file:
         file.write("##fileformat=VCFv4.2\n")
@@ -1455,27 +1531,6 @@ def write_full_haplotypes_to_vcf(chromosome, ref_start, ref_stop, ref_path, solu
         file.write("GT")                            # FORMAT
         file.write('\t')
         file.write('\t'.join(gts))                  # all SAMPLEs
-        #
-        # file.write('\n')
-        # file.write(chromosome)                      # CHROM
-        # file.write('\t')
-        # file.write(str(ref_start+1))                # POS
-        # file.write('\t')
-        # file.write("hapslap_" + uuid4().hex)        # ID
-        # file.write('\t')
-        # file.write(ref_sequence)                    # REF
-        # file.write('\t')
-        # file.write('N')                             # ALT
-        # file.write('\t')
-        # file.write("60")                            # QUAL
-        # file.write('\t')
-        # file.write("PASS")                          # FILTER
-        # file.write('\t')
-        # file.write(".")                             # INFO
-        # file.write('\t')
-        # file.write("GT")                            # FORMAT
-        # file.write('\t')
-        # file.write('\t'.join(["1/1"]*len(gts)))     # all SAMPLEs
 
     compress_and_index_vcf(output_path)
 
@@ -1882,27 +1937,6 @@ def infer_haplotypes(
 
     a = time.time()
 
-    # # If optimizing for multiple objectives, gather the pareto solutions first (all n values)
-    # results = find_all_pareto_solutions(
-    #     path_to_read_costs=path_to_read_costs,
-    #     reads=read_id_map,
-    #     samples=sample_id_map,
-    #     paths=paths,
-    #     sample_to_reads=sample_id_to_read_ids,
-    #     n_threads=30,
-    #     output_dir=output_directory
-    # )
-    #
-    # n_stop = len(data_per_sample.keys())
-    #
-    # # Find best compromise among pareto solutions
-    # n_min, solution = get_multiobjective_best_solution(
-    #     results=results,
-    #     n_stop=n_stop,
-    #     region_string=region_string,
-    #     output_directory=output_directory
-    # )
-
     solution = optimize_with_d_norm(
         path_to_read_costs=path_to_read_costs,
         reads=read_id_map,
@@ -1932,6 +1966,7 @@ def infer_haplotypes(
     # Before writing the final output sequences, trim the flanking sequence (to make evaluation simpler)
     trim_flanks_from_ref_alleles(alleles, flank_length)
 
+    print("Writing haplotypes to VCF")
     write_full_haplotypes_to_vcf(
         chromosome=chromosome,
         ref_start=ref_start,
@@ -1939,7 +1974,17 @@ def infer_haplotypes(
         ref_path=ref_path,
         solution=solution,
         sample_id_map=sample_id_map,
-        ref_name=ref_sample_name,
+        paths=paths,
+        alleles=alleles,
+        output_directory=output_directory
+    )
+
+    print("Writing candidate haplotypes to VCF")
+    write_full_candidate_haplotypes_to_vcf(
+        chromosome=chromosome,
+        ref_start=ref_start,
+        ref_stop=ref_stop,
+        ref_path=ref_path,
         paths=paths,
         alleles=alleles,
         output_directory=output_directory
