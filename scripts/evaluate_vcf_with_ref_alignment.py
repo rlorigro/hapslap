@@ -171,6 +171,8 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
     region_string = os.path.basename(vcf_path).replace(".vcf.gz","")
     chromosome, ref_start, ref_stop = parse_region_string(region_string)
 
+    ref_name = "ref"
+
     # First read the VCF and convert to a graph
     graph, alleles = vcf_to_graph(
         ref_path,
@@ -178,12 +180,12 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
         chromosome=chromosome,
         ref_start=ref_start,
         ref_stop=ref_stop,
-        ref_sample_name="ref",
+        ref_sample_name=ref_name,
         flank_length=flank_length,
         skip_incompatible=True
     )
 
-    graph, edge_to_deletion_index = remove_empty_nodes_from_variant_graph(graph, alleles)
+    graph, edge_to_allele_index = remove_empty_nodes_from_variant_graph(graph, alleles)
 
     output_gfa_path = os.path.join(output_directory, "variant_graph.gfa")
     write_graph_to_gfa(output_gfa_path, graph, alleles)
@@ -215,13 +217,24 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
         args_override=args
     )
 
+    alleles_output_path = os.path.join(output_directory,"alleles.csv")
+    with open(alleles_output_path, 'w') as file:
+        file.write("id,start,stop,length,samples,is_left_flank,is_right_flank\n")
+        for i in range(len(alleles)):
+            file.write(str(i) + ',' + alleles[i].as_comma_separated_str() + '\n')
+
+    # TODO: rewrite this to separate out allele stats vs literal node/edge graph stats
     alignments = defaultdict(list)
-    ref_distance = 0
     n_alignments = 0
-    n_nodes = graph.number_of_nodes()
-    n_edges = graph.number_of_edges()
     nodes_covered = set()
     edges_covered = set()
+
+    # Number of non-ref alleles (that are also not empty sequence)
+    n_nodes = sum(int(ref_name not in a.samples and len(a.sequence) > 0) for a in alleles)
+
+    # Only track edges that correspond to VCF alleles that contain no sequence, that were short-circuited.
+    # Technically not limited only to DELs, could be some other operation
+    n_edges = len(edge_to_allele_index)
 
     # Iterate the alignments and gather some stats
     with open(output_gaf_path, 'r') as file:
@@ -229,12 +242,6 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
             n_alignments += 1
             tokens = line.strip().split('\t')
             query_name = tokens[0]
-
-            # if "NA20129" not in query_name:
-            #     continue
-
-            # print()
-            # print(query_name)
 
             # Column 5 (0-based) is the path column in a GAF file
             # It can be a forward or reverse alignment, so we will temporarily interpret them all as forward alignments
@@ -251,17 +258,18 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
                 raise Exception("ERROR: Non GFA character found in path column of GFA")
 
             for i in range(len(path)):
-                # Give the flanking coverage for free
-                if (alleles[i].is_left_flank or alleles[i].is_right_flank):
-                    nodes_covered.add(path[i])
+                a = path[i]
 
                 # Assume that a node is fully covered if a path fully traverses it
-                elif i > 0 and i < len(path) - 1:
-                    nodes_covered.add(path[i])
+                if i > 0 and i < len(path) - 1 and ref_name not in alleles[a].samples:
+                    nodes_covered.add(a)
 
                 if i > 0:
                     edge = (path[i-1], path[i])
-                    edges_covered.add(edge)
+
+                    # Only track edges that are part of the allele set from the VCF
+                    if edge in edge_to_allele_index:
+                        edges_covered.add(edge)
 
             is_spanning = False
             if len(path) > 1 and alleles[path[0]].is_left_flank and alleles[path[-1]].is_right_flank:
@@ -280,13 +288,14 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
             ref_length = int(tokens[6])
             query_length = int(tokens[1])
 
-            ref_start = 0
-            if alleles[path[0]].is_left_flank:
-                ref_start = (flank_length - buffer_length)
-
-            ref_stop = ref_length
-            if alleles[path[-1]].is_right_flank:
-                ref_stop = ref_length - (flank_length - buffer_length)
+            # Not currently tracking coords in ref space, these will not be used
+            # ref_start = 0
+            # if alleles[path[0]].is_left_flank:
+            #     ref_start = (flank_length - buffer_length)
+            #
+            # ref_stop = ref_length
+            # if alleles[path[-1]].is_right_flank:
+            #     ref_stop = ref_length - (flank_length - buffer_length)
 
             query_start = (flank_length - buffer_length)
             query_stop = query_length - (flank_length - buffer_length)
@@ -374,9 +383,6 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
                     query_start=min_query_index,
                     query_stop=max_query_index
                 )
-
-                # print()
-                # print(a)
 
                 alignments[query_name].append(a)
 
@@ -504,8 +510,12 @@ def evaluate_directories(input_directories: list, ref_path, tsv_path, column_nam
     query_coverages_per_dir = [IterativeHistogram(start=0.0,stop=1.0,n_bins=100) for x in range(len(input_directories))]
     node_coverage_per_dir = [IterativeHistogram(start=0.0,stop=1.0,n_bins=100,unbounded_lower_bin=True) for x in range(len(input_directories))]
     edge_coverage_per_dir = [IterativeHistogram(start=0.0,stop=1.0,n_bins=100,unbounded_lower_bin=True) for x in range(len(input_directories))]
-    n_nodes_per_dir = [IterativeHistogram(start=0.0,stop=800,n_bins=100,unbounded_upper_bin=True) for x in range(len(input_directories))]
+    n_nodes_per_dir = [IterativeHistogram(start=0.0,stop=400,n_bins=100,unbounded_upper_bin=True) for x in range(len(input_directories))]
     n_alignments_per_dir = [IterativeHistogram(start=0.0,stop=400,n_bins=100,unbounded_upper_bin=True) for x in range(len(input_directories))]
+
+    regional_output_dir = os.path.join(output_directory,"regional")
+    if not os.path.exists(regional_output_dir):
+        os.makedirs(regional_output_dir)
 
     # Iterate the regions, extract the ref haplotypes only once for each, and evaluate all input dirs for each
     for r,[region_string,input_set] in enumerate(region_strings.items()):
@@ -520,31 +530,69 @@ def evaluate_directories(input_directories: list, ref_path, tsv_path, column_nam
 
         ref_sequences = get_region_haps(region_string, cache_dir, tsv_path, column_names, n_threads)
 
-        for i, input_directory in enumerate(input_directories):
-            vcf_path = os.path.join(input_directory, region_string + ".vcf.gz")
-            if not os.path.exists(vcf_path):
-                vcf_path = os.path.join(input_directory, region_string + ".vcf")
+        region_output_subdirectory = os.path.join(regional_output_dir,region_string.replace(":","_"))
+        output_path = os.path.join(region_output_subdirectory, "summary.csv")
 
-            output_subdirectory = os.path.join(output_directory, str(i))
-            results = evaluate_vcf_with_ref_alignment(
-                vcf_path=vcf_path,
-                ref_path=ref_path,
-                ref_sequences=ref_sequences,
-                flank_length=flank_length,
-                buffer_length=buffer_length,
-                output_directory=output_subdirectory,
-                n_threads=n_threads)
+        if not os.path.exists(region_output_subdirectory):
+            os.makedirs(region_output_subdirectory)
 
-            for name in results.iter_query_names():
-                identities_per_dir[i].update(results.identities[name])
-                query_coverages_per_dir[i].update(results.query_coverage[name])
+        with open(output_path, 'w') as file:
+            file.write("label,avg_identity,avg_query_coverage,node_coverage,edge_coverage,n_nodes,n_alignments\n")
 
-            node_coverage = float(results.nodes_covered) / float(results.n_nodes) if results.n_nodes > 0 else 1.0
-            edge_coverage = float(results.edges_covered) / float(results.n_edges) if results.n_edges > 0 else 1.0
-            node_coverage_per_dir[i].update(node_coverage)
-            edge_coverage_per_dir[i].update(edge_coverage)
-            n_nodes_per_dir[i].update(results.n_nodes)
-            n_alignments_per_dir[i].update(results.n_alignments)
+            for i, input_directory in enumerate(input_directories):
+                label = os.path.basename(input_directory)
+
+                vcf_path = os.path.join(input_directory, region_string + ".vcf.gz")
+                if not os.path.exists(vcf_path):
+                    vcf_path = os.path.join(input_directory, region_string + ".vcf")
+
+                output_subdirectory = os.path.join(region_output_subdirectory, label)
+                results = evaluate_vcf_with_ref_alignment(
+                    vcf_path=vcf_path,
+                    ref_path=ref_path,
+                    ref_sequences=ref_sequences,
+                    flank_length=flank_length,
+                    buffer_length=buffer_length,
+                    output_directory=output_subdirectory,
+                    n_threads=n_threads)
+
+                n = 0.0
+                total_identity = 0.0
+                total_query_coverage = 0.0
+
+                for name in results.iter_query_names():
+                    n += 1
+                    total_identity += results.identities[name]
+                    total_query_coverage += results.query_coverage[name]
+                    identities_per_dir[i].update(results.identities[name])
+                    query_coverages_per_dir[i].update(results.query_coverage[name])
+
+                avg_identity = total_identity/n
+                avg_query_coverage = total_query_coverage/n
+
+                if results.n_nodes > 0:
+                    node_coverage = float(results.nodes_covered) / float(results.n_nodes)
+                    node_coverage_per_dir[i].update(node_coverage)
+
+                if results.n_edges > 0:
+                    edge_coverage = float(results.edges_covered) / float(results.n_edges)
+                    edge_coverage_per_dir[i].update(edge_coverage)
+
+                n_nodes_per_dir[i].update(results.n_nodes)
+                n_alignments_per_dir[i].update(results.n_alignments)
+
+                data = [
+                    label,
+                    avg_identity,
+                    avg_query_coverage,
+                    node_coverage,
+                    edge_coverage,
+                    results.n_nodes,
+                    results.n_alignments
+                ]
+
+                file.write(','.join(list(map(str,data))))
+                file.write('\n')
 
     for h,histogram in enumerate(identities_per_dir):
         label = input_directories[h]

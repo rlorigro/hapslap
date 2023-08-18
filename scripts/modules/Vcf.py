@@ -461,7 +461,7 @@ def remove_empty_nodes_from_variant_graph(graph, alleles):
         if len(alleles[n].sequence) == 0:
             empty_nodes.append(n)
 
-    edge_to_deletion_index = dict()
+    edge_to_allele_index = dict()
     for n in empty_nodes:
         a_nodes = [e[0] for e in graph.in_edges(n)]
         b_nodes = [e[1] for e in graph.out_edges(n)]
@@ -469,14 +469,14 @@ def remove_empty_nodes_from_variant_graph(graph, alleles):
         for a in a_nodes:
             for b in b_nodes:
                 graph.add_edge(a,b, weight=0)
-                edge_to_deletion_index[(a,b)] = n
+                edge_to_allele_index[(a,b)] = n
 
         graph.remove_node(n)
 
-    return graph, edge_to_deletion_index
+    return graph, edge_to_allele_index
 
 
-def write_paths_to_vcf(alleles:list, paths:list, output_path:str, sample_name, edge_to_deletion_index=None, compress_and_index=True):
+def write_paths_to_vcf(alleles:list, paths:list, output_path:str, sample_name, edge_to_allele_index=None, compress_and_index=True):
     records_per_position = defaultdict(set)
 
     with open(output_path, 'w') as file:
@@ -488,11 +488,11 @@ def write_paths_to_vcf(alleles:list, paths:list, output_path:str, sample_name, e
             for i,n in enumerate(path):
                 # Deletions are implicit in the graph (empty nodes are removed) and therefore need to be searched by
                 # pairs of nodes (edges) instead of by single nodes
-                if edge_to_deletion_index is not None and i > 0:
+                if edge_to_allele_index is not None and i > 0:
                     edge = (path[i-1],n)
 
-                    if edge in edge_to_deletion_index:
-                        n_del = edge_to_deletion_index[edge]
+                    if edge in edge_to_allele_index:
+                        n_del = edge_to_allele_index[edge]
 
                         # If the edge is found in the mapping, it is guaranteed to be in the alleles list
                         pos = int(alleles[n_del].vcf_data["POS"])

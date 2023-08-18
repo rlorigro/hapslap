@@ -1473,7 +1473,7 @@ def write_full_candidate_haplotypes_to_vcf(chromosome, ref_start, ref_stop, ref_
     ref_sequence = chromosome_sequence[ref_start:ref_stop]
 
     for path_id in paths.ids():
-        sample_name = str(path_id)
+        sample_name = path_id
 
         # Sample --> path_id
         path_ids_per_sample[sample_name].append(path_id)
@@ -1493,7 +1493,7 @@ def write_full_candidate_haplotypes_to_vcf(chromosome, ref_start, ref_stop, ref_
     with open(output_path, 'w') as file:
         file.write("##fileformat=VCFv4.2\n")
         file.write("##FORMAT=<ID=GT,Number=1,Type=String,Description=\"The genotype of the variant\">\n")
-        file.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + '\t'.join(sorted(path_ids_per_sample.keys())))
+        file.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + '\t'.join(list(map(str,sorted(path_ids_per_sample.keys())))))
 
         gts = list()
         for sample_name,path_ids in sorted(path_ids_per_sample.items(), key=lambda x: x[0]):
@@ -1503,10 +1503,8 @@ def write_full_candidate_haplotypes_to_vcf(chromosome, ref_start, ref_stop, ref_
                 gts.append("0/0")
             elif len(sample_indexes) == 1:
                 gts.append("0/" + str(sample_indexes[0]))
-            elif len(sample_indexes) == 2:
-                gts.append(str(sample_indexes[0]) + "/" + str(sample_indexes[1]))
             else:
-                raise Exception("ERROR: too many alleles specified by sample: " + sample_name)
+                raise Exception("ERROR: incorrect number of alleles when iterating paths, ID: " + str(sample_name))
 
         prefix = chromosome_sequence[ref_start-1]
 
@@ -1534,7 +1532,7 @@ def write_full_candidate_haplotypes_to_vcf(chromosome, ref_start, ref_stop, ref_
     compress_and_index_vcf(output_path)
 
 
-def write_path_assignments_to_vcf(solution, sample_id_map, paths, alleles, edge_to_deletion_index, output_directory, n_threads):
+def write_path_assignments_to_vcf(solution, sample_id_map, paths, alleles, edge_to_allele_index, output_directory, n_threads):
     output_subdirectory = os.path.join(output_directory, "vcf")
     if not os.path.exists(output_subdirectory):
         os.makedirs(output_subdirectory)
@@ -1555,7 +1553,7 @@ def write_path_assignments_to_vcf(solution, sample_id_map, paths, alleles, edge_
     for sample,paths in paths_per_sample.items():
         output_path = os.path.join(output_subdirectory, sample + ".vcf")
         # alleles, paths, output_path, sample_name, edge_to_deletion_index, compress_and_index
-        args.append((alleles, paths, output_path, sample, edge_to_deletion_index, True))
+        args.append((alleles, paths, output_path, sample, edge_to_allele_index, True))
 
     with Pool(n_threads) as pool:
         results = pool.starmap(write_paths_to_vcf, args)
@@ -1663,7 +1661,7 @@ def infer_haplotypes(
     )
 
     # Remove empty nodes
-    graph, edge_to_deletion_index = remove_empty_nodes_from_variant_graph(graph, alleles)
+    graph, edge_to_allele_index = remove_empty_nodes_from_variant_graph(graph, alleles)
 
     # Write the GFA
     output_gfa_path = output_gfa_path.replace(".gfa", "_no_empty.gfa")
@@ -1954,7 +1952,7 @@ def infer_haplotypes(
         sample_id_map=sample_id_map,
         paths=paths,
         alleles=alleles,
-        edge_to_deletion_index=edge_to_deletion_index,
+        edge_to_allele_index=edge_to_allele_index,
         output_directory=output_directory,
         n_threads=n_threads
     )
