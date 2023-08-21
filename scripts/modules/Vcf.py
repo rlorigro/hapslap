@@ -8,8 +8,11 @@ import vcf
 
 if __name__ != "__main__":
     from .Paths import enumerate_paths
+    from .Cigar import get_reverse_complement
+
 else:
     from Paths import enumerate_paths
+    from Cigar import get_reverse_complement
 
 from networkx import DiGraph
 from pysam import FastaFile
@@ -340,7 +343,7 @@ def get_alleles_from_vcfs(ref_path, data_per_sample, chromosome, ref_start=None,
                                     start += 1
                                     stop += 1
                                 elif sequence.strip() == "<INV>":
-                                    sequence = ref_sequence[start+1:start+b_length+1][::-1]
+                                    sequence = get_reverse_complement(ref_sequence[start+1:start+b_length+1])
                                     start += 1
                                     stop += 1
                                 elif sequence == 'N':

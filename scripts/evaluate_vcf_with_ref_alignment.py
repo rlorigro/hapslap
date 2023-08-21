@@ -10,8 +10,9 @@ from matplotlib import pyplot
 from modules.Vcf import vcf_to_graph,compress_and_index_vcf,remove_empty_nodes_from_variant_graph
 from modules.Cigar import get_haplotypes_of_region,char_is_query_move,char_is_ref_move
 from modules.IterativeHistogram import IterativeHistogram
-from modules.Bam import download_regions_of_bam
 from modules.Align import run_minigraph,run_panaligner
+from modules.IntervalGraph import IntervalGraph
+from modules.Bam import download_regions_of_bam
 from modules.Sequence import Sequence
 
 
@@ -285,25 +286,10 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
 
             cigar_tuples = [x for x in iter_tuples_of_cigar_string(cigar_string)]
 
-            ref_length = int(tokens[6])
             query_length = int(tokens[1])
-
-            # Not currently tracking coords in ref space, these will not be used
-            # ref_start = 0
-            # if alleles[path[0]].is_left_flank:
-            #     ref_start = (flank_length - buffer_length)
-            #
-            # ref_stop = ref_length
-            # if alleles[path[-1]].is_right_flank:
-            #     ref_stop = ref_length - (flank_length - buffer_length)
 
             query_start = (flank_length - buffer_length)
             query_stop = query_length - (flank_length - buffer_length)
-
-            # Don't have to deal with clips (thank the lord)
-            # If the alignment is in reverse, ref coordinates decrease
-            ref_cigar_start = int(tokens[7]) if not is_reverse else int(tokens[8])
-            ref_cigar_stop = ref_cigar_start
 
             # Query coordinates always increase
             query_cigar_start = int(tokens[2])
@@ -318,17 +304,10 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
             max_query_index = -1
 
             for l,c in cigar_tuples if not is_reverse else reversed(cigar_tuples):
-                ref_cigar_stop = ref_cigar_start + l*char_is_ref_move[c] * (-1 if is_reverse else 1)
                 query_cigar_stop = query_cigar_start + l*char_is_query_move[c]
 
                 # print(l,c,is_reverse,query_cigar_start,query_cigar_stop,query_start,query_stop)
                 # print("=", n_match, "X", n_mismatch, "I", n_insert, "D", n_delete)
-
-                # Flip window bounds if it's a reverse alignment
-                if is_reverse:
-                    t = ref_cigar_stop
-                    ref_cigar_stop = ref_cigar_start
-                    ref_cigar_start = t
 
                 cost, min_index, max_index = get_bounded_cigar_data(
                     c=c,
@@ -360,13 +339,7 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
                 if c == "=":
                     n_match += cost
 
-                # Unflip window bounds
-                if is_reverse:
-                    t = ref_cigar_stop
-                    ref_cigar_stop = ref_cigar_start
-                    ref_cigar_start = t
-
-                ref_cigar_start = ref_cigar_stop
+                # ref_cigar_start = ref_cigar_stop
                 query_cigar_start = query_cigar_stop
 
             # Only count alignments that actually overlap the window to some extent
@@ -395,18 +368,43 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
     # Worst case, a near-boundary overlapping non-match gets double counted, reducing the score
     query_coverage = defaultdict(float)
     for query_name in alignments:
-        prev_stop = None
         bases_covered = 0
 
-        for a in sorted(alignments[query_name], key=lambda x: x.query_start):
-            # The query is only not covered in an alignment if there is an insert (ignoring mismatches)
-            bases_covered += a.query_stop - a.query_start + 1 - a.n_insert
-            if prev_stop is not None:
-                overlap = prev_stop - a.query_start
-                if overlap > 0:
-                    bases_covered -= overlap
+        intervals = list()
+        for a,alignment in enumerate(alignments[query_name]):
+            intervals.append((alignment.query_start, alignment.query_stop, a))
 
-            prev_stop = a.query_stop
+        interval_graph = IntervalGraph(intervals)
+        components = interval_graph.get_connected_components()
+
+        # Find connected components of overlap intervals in the alignments and average their error rates,
+        # Recompute an average alignment in each interval
+        for component in components:
+            total_bases = 0
+            total_inserts = 0
+
+            component_start = sys.maxsize
+            component_stop = -1
+
+            for c in component:
+                total_bases += (c[1] - c[0] + 1)
+
+                # IntervalGraph collapses intervals of the same coords, and their corresponding data into a set.
+                # Exact interval collisions shouldn't happen, but if they do, then the first will arbitrarily be chosen
+                a = next(iter(interval_graph.graph[c].values))
+
+                total_inserts += alignments[query_name][a].n_insert
+
+                if c[0] < component_start:
+                    component_start = c[0]
+
+                if c[1] > component_stop:
+                    component_stop = c[1]
+
+            component_span = component_stop - component_start + 1
+            avg_insert_rate = float(total_inserts)/float(total_bases)
+
+            bases_covered += component_span - int(round(avg_insert_rate*float(component_span)))
 
         l = query_lengths[query_name]
 
