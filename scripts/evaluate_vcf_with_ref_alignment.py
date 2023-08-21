@@ -11,7 +11,7 @@ from modules.Vcf import vcf_to_graph,compress_and_index_vcf,remove_empty_nodes_f
 from modules.Cigar import get_haplotypes_of_region,char_is_query_move,char_is_ref_move
 from modules.IterativeHistogram import IterativeHistogram
 from modules.Bam import download_regions_of_bam
-from modules.Align import run_minigraph
+from modules.Align import run_minigraph,run_panaligner
 from modules.Sequence import Sequence
 
 
@@ -209,7 +209,7 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
     ]
 
     # Align the relevant haplotypes to the variant graph
-    output_gaf_path = run_minigraph(
+    output_gaf_path = run_panaligner(
         output_directory=output_directory,
         gfa_path=output_gfa_path,
         fasta_path=fasta_path,
