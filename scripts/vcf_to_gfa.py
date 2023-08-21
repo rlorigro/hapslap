@@ -1,4 +1,4 @@
-from modules.Vcf import vcf_to_graph,write_graph_to_gfa
+from modules.Vcf import vcf_to_graph,write_graph_to_gfa,remove_empty_nodes_from_variant_graph
 import argparse
 import re
 import os
@@ -17,7 +17,7 @@ def parse_region_string(s):
     return chromosome, start, stop
 
 
-def main(vcf_path, ref_path, region_string, output_directory):
+def main(vcf_path, ref_path, region_string, output_directory, keep_empty):
     data_per_sample = {"sample":{"vcf":vcf_path}}
     ref_sample_name = "ref"
     flank_length = 500
@@ -32,6 +32,9 @@ def main(vcf_path, ref_path, region_string, output_directory):
         ref_stop,
         ref_sample_name,
         flank_length)
+
+    if not keep_empty:
+        graph, edge_to_allele_index = remove_empty_nodes_from_variant_graph(graph, alleles)
 
     name = os.path.basename(vcf_path)
     name = name.split('.')[0] + ".gfa"
@@ -75,6 +78,8 @@ if __name__ == "__main__":
         help="where to write the GFA output"
     )
 
+    parser.add_argument('--keep_empty', action=argparse.BooleanOptionalAction)
+
     args = parser.parse_args()
 
     main(
@@ -82,4 +87,5 @@ if __name__ == "__main__":
         ref_path=args.ref,
         output_directory=args.output_dir,
         region_string=args.region,
+        keep_empty=args.keep_empty,
     )
