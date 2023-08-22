@@ -91,7 +91,12 @@ complement = {
     'A':'T',
     'C':'G',
     'G':'C',
-    'T':'A'
+    'T':'A',
+    'N':'N',
+    'a':'t',
+    'c':'g',
+    'g':'c',
+    't':'a'
 }
 
 
@@ -582,10 +587,6 @@ def test_haplotype_fetching(data_directory):
         if len(item) > 8000:
             raise Exception("FAIL: oversize sequence in HG00741_bam_hap1_vs_chm13_chr20 64108857-64113364")
 
-    exit()
-
-
-
 
 def test_region(test_sam_path, chromosome, start, stop):
     data = defaultdict(list)
@@ -652,6 +653,7 @@ def test():
     stop=2050
     print("\nTESTING: ", chromosome, start, stop)
     test_region(test_sam_path=test_sam_path, chromosome=chromosome, start=start, stop=stop)
+
 
 if __name__ == "__main__":
     test()
