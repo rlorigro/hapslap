@@ -247,12 +247,10 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
             # Column 5 (0-based) is the path column in a GAF file
             # It can be a forward or reverse alignment, so we will temporarily interpret them all as forward alignments
             path = None
-            is_reverse = False
             if tokens[5][0] == '>':
                 path = tuple(map(int,re.findall(r'\d+', tokens[5])))
 
             elif tokens[5][0] == '<':
-                is_reverse = True
                 path = tuple(map(int,reversed(re.findall(r'\d+', tokens[5]))))
 
             else:
@@ -303,7 +301,7 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
             min_query_index = sys.maxsize
             max_query_index = -1
 
-            for l,c in cigar_tuples if not is_reverse else reversed(cigar_tuples):
+            for l,c in cigar_tuples:
                 query_cigar_stop = query_cigar_start + l*char_is_query_move[c]
 
                 # print(l,c,is_reverse,query_cigar_start,query_cigar_stop,query_start,query_stop)
@@ -359,6 +357,8 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
 
                 alignments[query_name].append(a)
 
+    print(vcf_path)
+
     query_lengths = dict()
     for s in ref_sequences.values():
         query_lengths[s.name] = len(s) - (flank_length - buffer_length)*2 + 1
@@ -368,6 +368,8 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
     # Worst case, a near-boundary overlapping non-match gets double counted, reducing the score
     query_coverage = defaultdict(float)
     for query_name in alignments:
+        print()
+        print(query_name)
         bases_covered = 0
 
         intervals = list()
@@ -404,16 +406,19 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
             component_span = component_stop - component_start + 1
             avg_insert_rate = float(total_inserts)/float(total_bases)
 
-            bases_covered += component_span - int(round(avg_insert_rate*float(component_span)))
+            n_avg_inserts = int(round(avg_insert_rate*float(component_span)))
+            bases_covered += component_span - n_avg_inserts
+            print(component_span, n_avg_inserts)
 
         l = query_lengths[query_name]
+
+        print(bases_covered, l)
 
         if l > 0:
             query_coverage[query_name] = float(bases_covered) / float(l)
         else:
             query_coverage[query_name] = 1
 
-    print(vcf_path)
     print("identities")
 
     identities = defaultdict(float)
@@ -451,10 +456,8 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
     return results
 
 
-def get_region_haps(region_string, cache_dir, tsv_path, column_names, n_threads):
+def get_region_haps(region_string, cache_dir, tsv_path, column_names, flank_length, n_threads):
     chromosome, ref_start, ref_stop = parse_region_string(region_string)
-    flank_length = 800
-    buffer_length = 10
 
     aligned_hap_directory = os.path.join(cache_dir, "aligned_haps")
     bam_paths = download_regions_of_bam(
@@ -526,7 +529,13 @@ def evaluate_directories(input_directories: list, ref_path, tsv_path, column_nam
             sys.stderr.write("WARNING: skipping region not found in all directories: " + region_string + '\n')
             continue
 
-        ref_sequences = get_region_haps(region_string, cache_dir, tsv_path, column_names, n_threads)
+        ref_sequences = get_region_haps(
+            region_string=region_string,
+            cache_dir=cache_dir,
+            tsv_path=tsv_path,
+            column_names=column_names,
+            flank_length=flank_length,
+            n_threads=n_threads)
 
         region_output_subdirectory = os.path.join(regional_output_dir,region_string.replace(":","_"))
         output_path = os.path.join(region_output_subdirectory, "summary.csv")
@@ -568,10 +577,12 @@ def evaluate_directories(input_directories: list, ref_path, tsv_path, column_nam
                 avg_identity = total_identity/n
                 avg_query_coverage = total_query_coverage/n
 
+                node_coverage = 0
                 if results.n_nodes > 0:
                     node_coverage = float(results.nodes_covered) / float(results.n_nodes)
                     node_coverage_per_dir[i].update(node_coverage)
 
+                edge_coverage = 0
                 if results.n_edges > 0:
                     edge_coverage = float(results.edges_covered) / float(results.n_edges)
                     edge_coverage_per_dir[i].update(edge_coverage)
