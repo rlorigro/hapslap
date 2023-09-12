@@ -150,6 +150,47 @@ def run_minigraph(output_directory, gfa_path, fasta_path, n_threads, args_overri
     return output_path
 
 
+def run_graphchainer(output_directory, gfa_path, fasta_path, n_threads, args_override=None):
+    output_path = os.path.join(output_directory, "reads_vs_graph.gaf")
+
+    # GraphChainer -t 30 -f ./bad.fasta -g ./bad.gfa -a graphchain.gaf
+
+    if args_override is None:
+        args = [
+            "GraphChainer",
+            "-c",
+            "-x", "lr",
+            "-t", str(n_threads),
+            "-a", output_path,
+            "-g", gfa_path,
+            "-f", fasta_path]
+    else:
+        args = \
+            ["minichain"] + \
+            args_override + \
+            [
+                "-t", str(n_threads),
+                "-a", output_path,
+                "-g", gfa_path,
+                "-f", fasta_path
+            ]
+
+    sys.stderr.write(" ".join(args)+'\n')
+
+    try:
+        p1 = subprocess.run(args, check=True, stderr=subprocess.PIPE)
+
+    except subprocess.CalledProcessError as e:
+        sys.stderr.write("Status : FAIL " + '\n' + (e.stderr.decode("utf8") if e.stderr is not None else "") + '\n')
+        sys.stderr.flush()
+        return False
+    except Exception as e:
+        sys.stderr.write(str(e))
+        return False
+
+    return output_path
+
+
 def run_panaligner(output_directory, gfa_path, fasta_path, n_threads, args_override=None):
     output_path = os.path.join(output_directory, "reads_vs_graph.gaf")
 

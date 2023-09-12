@@ -198,19 +198,19 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
             file.write(s.to_fasta_string())
             file.write('\n')
 
-    args = [
-        "-c",
-        "-g", str(20000),
-        "-k", str(14),
-        # "-f", "0.5",
-        "-r", "10000,20000",
-        "-n", "3,3",
-        # "-m", "30,20",
-        "-x", "lr",
-    ]
+    # args = [
+    #     "-c",
+    #     "-g", str(20000),
+    #     "-k", str(14),
+    #     # "-f", "0.5",
+    #     "-r", "10000,20000",
+    #     "-n", "3,3",
+    #     # "-m", "30,20",
+    #     "-x", "lr",
+    # ]
 
     # Align the relevant haplotypes to the variant graph
-    output_gaf_path = run_panaligner(
+    output_gaf_path = run_graphchainer(
         output_directory=output_directory,
         gfa_path=output_gfa_path,
         fasta_path=fasta_path,

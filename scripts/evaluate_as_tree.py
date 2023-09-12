@@ -20,10 +20,8 @@ import re
 from networkx.drawing.nx_agraph import graphviz_layout
 from matplotlib import pyplot,colors
 from pywfa import WavefrontAligner
-import pygraphviz
 import matplotlib
 import networkx
-import pandas
 
 matplotlib.use('Agg')
 
