@@ -1740,8 +1740,7 @@ def infer_haplotypes(
         output_directory=output_directory,
         gfa_path=output_gfa_path,
         fasta_path=read_fasta_path,
-        n_threads=n_threads,
-        args_override=args
+        n_threads=n_threads
     )
 
     b = time.time()

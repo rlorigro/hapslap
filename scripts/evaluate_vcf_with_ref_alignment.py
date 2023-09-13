@@ -214,8 +214,7 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
         output_directory=output_directory,
         gfa_path=output_gfa_path,
         fasta_path=fasta_path,
-        n_threads=n_threads,
-        args_override=args
+        n_threads=n_threads
     )
 
     alleles_output_path = os.path.join(output_directory,"alleles.csv")
