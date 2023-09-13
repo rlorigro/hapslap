@@ -158,15 +158,13 @@ def run_graphchainer(output_directory, gfa_path, fasta_path, n_threads, args_ove
     if args_override is None:
         args = [
             "GraphChainer",
-            "-c",
-            "-x", "lr",
             "-t", str(n_threads),
             "-a", output_path,
             "-g", gfa_path,
             "-f", fasta_path]
     else:
         args = \
-            ["minichain"] + \
+            ["GraphChainer"] + \
             args_override + \
             [
                 "-t", str(n_threads),
