@@ -8,7 +8,7 @@ import os
 from matplotlib import pyplot
 import matplotlib
 
-from modules.Vcf import vcf_to_graph,compress_and_index_vcf,remove_empty_nodes_from_variant_graph
+from modules.Vcf import vcf_to_graph,compress_and_index_vcf,remove_empty_nodes_from_variant_graph,index_vcf
 from modules.Cigar import get_haplotypes_of_region,char_is_query_move,char_is_ref_move
 from modules.IterativeHistogram import IterativeHistogram
 from modules.Align import run_minigraph,run_panaligner,run_graphchainer,run_graphaligner
@@ -553,6 +553,9 @@ def evaluate_directories(input_directories: list, ref_path, tsv_path, column_nam
                 vcf_path = os.path.join(input_directory, region_string + ".vcf.gz")
                 if not os.path.exists(vcf_path):
                     vcf_path = os.path.join(input_directory, region_string + ".vcf")
+
+                if vcf_path.endswith(".gz") and not os.path.exists(vcf_path + ".tbi"):
+                    index_vcf(vcf_path, timeout=60 * 60, use_cache=True)
 
                 output_subdirectory = os.path.join(region_output_subdirectory, label)
                 results = evaluate_vcf_with_ref_alignment(

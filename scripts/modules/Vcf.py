@@ -114,6 +114,27 @@ def compress_and_index_vcf(vcf_path, timeout=60*60, use_cache=False):
     return output_vcf_path
 
 
+def index_vcf(vcf_path, timeout=60*60, use_cache=False):
+    args = ["tabix", "-p", "vcf", vcf_path]
+
+    sys.stderr.write(" ".join(args)+'\n')
+
+    try:
+        p1 = subprocess.run(args, check=True, stderr=subprocess.PIPE, timeout=timeout)
+
+    except subprocess.CalledProcessError as e:
+        sys.stderr.write("Status: FAIL " + '\n' + (e.stderr.decode("utf8") if e.stderr is not None else "") + '\n')
+        sys.stderr.flush()
+        return None
+
+    except subprocess.TimeoutExpired as e:
+        sys.stderr.write("Status: FAIL due to timeout " + '\n' + (e.stderr.decode("utf8") if e.stderr is not None else "") + '\n')
+        sys.stderr.flush()
+        return None
+
+    return vcf_path
+
+
 def merge_vcfs(vcf_paths, output_path, force_samples=False, timeout=60*60):
 
     if not force_samples:
