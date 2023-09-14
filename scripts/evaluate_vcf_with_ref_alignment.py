@@ -210,7 +210,7 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
     # ]
 
     # Align the relevant haplotypes to the variant graph
-    output_gaf_path = run_graphchainer(
+    output_gaf_path = run_graphaligner(
         output_directory=output_directory,
         gfa_path=output_gfa_path,
         fasta_path=fasta_path,
