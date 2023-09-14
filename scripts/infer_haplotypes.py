@@ -1,7 +1,7 @@
 import ortools.sat.python.cp_model
 
 from modules.Vcf import vcf_to_graph,write_paths_to_vcf,remove_empty_nodes_from_variant_graph,merge_vcfs_in_directory,write_graph_to_gfa,write_node_csv,compress_and_index_vcf
-from modules.Align import run_minimap2,run_minigraph,run_mashmap,run_minimap2_on_read_subset,run_panaligner,run_graphchainer
+from modules.Align import run_minimap2,run_minigraph,run_mashmap,run_minimap2_on_read_subset,run_panaligner,run_graphchainer,run_graphaligner
 from modules.Cigar import iterate_cigar,cigar_index_to_char,is_ref_move
 from modules.IterativeHistogram import IterativeHistogram
 from modules.IncrementalIdMap import IncrementalIdMap
@@ -1736,7 +1736,7 @@ def infer_haplotypes(
     # ]
 
     # Align the relevant haplotypes to the variant graph
-    output_gaf_path = run_graphchainer(
+    output_gaf_path = run_graphaligner(
         output_directory=output_directory,
         gfa_path=output_gfa_path,
         fasta_path=read_fasta_path,

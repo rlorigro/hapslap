@@ -189,6 +189,46 @@ def run_graphchainer(output_directory, gfa_path, fasta_path, n_threads, args_ove
     return output_path
 
 
+def run_graphaligner(output_directory, gfa_path, fasta_path, n_threads, args_override=None):
+    output_path = os.path.join(output_directory, "reads_vs_graph.gaf")
+
+    # GraphAligner -g test/graph.gfa -f test/read.fa -a test/aln.gaf -x vg
+
+    if args_override is None:
+        args = [
+            "GraphAligner",
+            "-x", "vg",
+            "-t", str(n_threads),
+            "-a", output_path,
+            "-g", gfa_path,
+            "-f", fasta_path]
+    else:
+        args = \
+            ["GraphAligner"] + \
+            args_override + \
+            [
+                "-t", str(n_threads),
+                "-a", output_path,
+                "-g", gfa_path,
+                "-f", fasta_path
+            ]
+
+    sys.stderr.write(" ".join(args)+'\n')
+
+    try:
+        p1 = subprocess.run(args, check=True, stderr=subprocess.PIPE)
+
+    except subprocess.CalledProcessError as e:
+        sys.stderr.write("Status : FAIL " + '\n' + (e.stderr.decode("utf8") if e.stderr is not None else "") + '\n')
+        sys.stderr.flush()
+        return False
+    except Exception as e:
+        sys.stderr.write(str(e))
+        return False
+
+    return output_path
+
+
 def run_panaligner(output_directory, gfa_path, fasta_path, n_threads, args_override=None):
     output_path = os.path.join(output_directory, "reads_vs_graph.gaf")
 

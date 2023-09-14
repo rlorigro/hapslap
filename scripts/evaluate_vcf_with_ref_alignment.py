@@ -10,7 +10,7 @@ from matplotlib import pyplot
 from modules.Vcf import vcf_to_graph,compress_and_index_vcf,remove_empty_nodes_from_variant_graph
 from modules.Cigar import get_haplotypes_of_region,char_is_query_move,char_is_ref_move
 from modules.IterativeHistogram import IterativeHistogram
-from modules.Align import run_minigraph,run_panaligner,run_graphchainer
+from modules.Align import run_minigraph,run_panaligner,run_graphchainer,run_graphaligner
 from modules.IntervalGraph import IntervalGraph
 from modules.Bam import download_regions_of_bam
 from modules.Sequence import Sequence
