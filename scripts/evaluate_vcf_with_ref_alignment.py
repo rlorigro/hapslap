@@ -6,6 +6,7 @@ import re
 import os
 
 from matplotlib import pyplot
+import matplotlib
 
 from modules.Vcf import vcf_to_graph,compress_and_index_vcf,remove_empty_nodes_from_variant_graph
 from modules.Cigar import get_haplotypes_of_region,char_is_query_move,char_is_ref_move
@@ -15,6 +16,7 @@ from modules.IntervalGraph import IntervalGraph
 from modules.Bam import download_regions_of_bam
 from modules.Sequence import Sequence
 
+matplotlib.use('Agg')
 
 class Alignment:
     def __init__(self, ref_name, query_name, n_delete, n_insert, n_match, n_mismatch, ref_start, ref_stop, query_start, query_stop):
@@ -671,7 +673,7 @@ def evaluate_directories(input_directories: list, ref_path, tsv_path, column_nam
     axes[0][0].legend()
 
     pyplot.savefig("comparison.png", dpi=300)
-    pyplot.show()
+    # pyplot.show()
     pyplot.close()
 
 
