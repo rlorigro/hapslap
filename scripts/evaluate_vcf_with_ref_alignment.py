@@ -613,9 +613,10 @@ def evaluate_directories(input_directories: list, ref_path, tsv_path, column_nam
 
         x = histogram.get_bin_centers()
         y = 1 - numpy.cumsum(histogram.get_normalized_histogram())
-        axes[0][0].plot(x,y,alpha=0.6, color="C" + str(h), label=label)
+        axes[0][0].plot(x,y,alpha=0.6, color="C" + str(h), label=label, linewidth=0.5)
         axes[0][0].set_xlabel("Alignment identities")
         axes[0][0].set_ylabel("Cumulative density")
+        axes[0][0].set_ylim([0.4,1.1])
         axes[0][0].set_xlim([-0.05,1.05])
         axes[0][0].invert_xaxis()
 
@@ -624,9 +625,10 @@ def evaluate_directories(input_directories: list, ref_path, tsv_path, column_nam
 
         x = histogram.get_bin_centers()
         y = 1 - numpy.cumsum(histogram.get_normalized_histogram())
-        axes[0][1].plot(x,y,alpha=0.6, color="C" + str(h), label=label)
+        axes[0][1].plot(x,y,alpha=0.6, color="C" + str(h), label=label, linewidth=0.5)
         axes[0][1].set_xlabel("Haplotype portion covered")
         axes[0][1].set_ylabel("Cumulative density")
+        axes[0][1].set_ylim([0.4,1.1])
         axes[0][1].set_xlim([-0.05,1.05])
         axes[0][1].invert_xaxis()
 
@@ -635,7 +637,7 @@ def evaluate_directories(input_directories: list, ref_path, tsv_path, column_nam
 
         x = histogram.get_bin_centers()
         y = numpy.cumsum(histogram.get_normalized_histogram())
-        axes[1][2].plot(x,y,alpha=0.6, color="C" + str(h), label=label)
+        axes[1][2].plot(x,y,alpha=0.6, color="C" + str(h), label=label, linewidth=0.5)
         axes[1][2].set_xlabel("# Nodes in graph")
         axes[1][2].set_ylabel("Cumulative density")
 
@@ -644,7 +646,7 @@ def evaluate_directories(input_directories: list, ref_path, tsv_path, column_nam
 
         x = histogram.get_bin_centers()
         y = 1 - numpy.cumsum(histogram.get_normalized_histogram())
-        axes[1][0].plot(x,y,alpha=0.6, color="C" + str(h), label=label)
+        axes[1][0].plot(x,y,alpha=0.6, color="C" + str(h), label=label, linewidth=0.5)
         axes[1][0].set_xlabel("Nodes (alleles) covered")
         axes[1][0].set_ylabel("Cumulative density")
         axes[1][0].set_xlim([-0.05,1.05])
@@ -655,7 +657,7 @@ def evaluate_directories(input_directories: list, ref_path, tsv_path, column_nam
 
         x = histogram.get_bin_centers()
         y = 1 - numpy.cumsum(histogram.get_normalized_histogram())
-        axes[1][1].plot(x,y,alpha=0.6, color="C" + str(h), label=label)
+        axes[1][1].plot(x,y,alpha=0.6, color="C" + str(h), label=label, linewidth=0.5)
         axes[1][1].set_xlabel("Edges covered")
         axes[1][1].set_ylabel("Cumulative density")
         axes[1][1].set_xlim([-0.05,1.05])
@@ -666,16 +668,17 @@ def evaluate_directories(input_directories: list, ref_path, tsv_path, column_nam
 
         x = histogram.get_bin_centers()
         y = numpy.cumsum(histogram.get_normalized_histogram())
-        axes[0][2].plot(x,y,alpha=0.6, color="C" + str(h), label=label)
+        axes[0][2].plot(x,y,alpha=0.6, color="C" + str(h), label=label, linewidth=0.5)
         axes[0][2].set_xlabel("# Alignments")
         axes[0][2].set_ylabel("Cumulative density")
+        axes[0][2].set_ylim([0.4,1.1])
 
     # axes[1][2].axis("off")
 
     fig.set_size_inches(14,8)
     axes[0][0].legend()
 
-    pyplot.savefig("comparison.png", dpi=300)
+    pyplot.savefig("comparison.png", dpi=400)
     # pyplot.show()
     pyplot.close()
 
