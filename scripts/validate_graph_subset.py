@@ -1,6 +1,9 @@
-import argparse
-import networkx
 from copy import copy
+import argparse
+import sys
+import os
+
+import networkx
 
 
 def path_recursion(graph, id, path=None):
@@ -21,7 +24,7 @@ def enumerate_paths(graph):
     # Get start node
     start_id = next(networkx.topological_sort(graph))
 
-    print("Starting path recursion from %s" % start_id)
+    # print("Starting path recursion from %s" % start_id)
 
     paths = [p for p in path_recursion(graph=graph, id=start_id)]
 
@@ -36,7 +39,7 @@ def read_gfa_as_digraph(gfa_path, graph):
                 id = data[1]
                 sequence = data[2]
 
-                print(id, sequence if len(sequence) <= 100 else sequence[:100])
+                # print(id, sequence if len(sequence) <= 100 else sequence[:100])
 
                 graph.add_node(id, sequence=sequence)
 
@@ -50,7 +53,7 @@ def read_gfa_as_digraph(gfa_path, graph):
                 a_reversal = tokens[2] == '-'
                 b_reversal = tokens[4] == '-'
 
-                print(a,a_reversal,b,b_reversal)
+                # print(a,a_reversal,b,b_reversal)
 
                 if a_reversal == False and b_reversal == False:
                     graph.add_edge(a,b)
@@ -68,7 +71,7 @@ def path_to_sequence(graph, path):
     return ''.join(sequences)
 
 
-def validate_graph_subset(path_a, path_b):
+def validate_graph_subset(path_a, path_b, output_directory):
     graph_a = networkx.DiGraph()
     graph_b = networkx.DiGraph()
 
@@ -87,16 +90,32 @@ def validate_graph_subset(path_a, path_b):
     failing_paths = set()
     for s in seq_set_a:
         path = path_seqs_a[s]
-        print("validating path from graph A:", path)
 
         if s not in seq_set_b:
             failing_paths.add(path)
 
     if len(failing_paths) != 0:
-        for p in failing_paths:
-            print(p)
+        sys.stderr.write("FAILING PATHS (GRAPH A):\n")
 
-        raise Exception("FAIL: not all paths in graph A contained in graph B")
+        if output_directory is not None:
+            if not os.path.exists(output_directory):
+                os.makedirs(output_directory)
+
+            output_path = os.path.join(output_directory,"fail_paths.fasta")
+            with open(output_path, 'w') as file:
+                for p in failing_paths:
+                    file.write('>')
+                    file.write('_'.join(p))
+                    file.write('\n')
+                    for id in p:
+                        file.write(graph_a.nodes[id]["sequence"])
+                    file.write('\n')
+
+        for p in failing_paths:
+            sys.stderr.write(','.join(p))
+            sys.stderr.write('\n')
+
+        raise Exception("FAIL: not all paths in graph A contained in graph B. See above stderr for details.")
 
 
 if __name__ == "__main__":
@@ -116,6 +135,14 @@ if __name__ == "__main__":
         help="The graph (GFA) that is expected to be a superset of graph A"
     )
 
+    parser.add_argument(
+        "-o",
+        required=False,
+        default=None,
+        type=str,
+        help="Optional output directory where 'fail_paths.fasta' will be written, containing the path sequences from A that are not in B"
+    )
+
     args = parser.parse_args()
 
-    validate_graph_subset(path_a=args.a, path_b=args.b)
+    validate_graph_subset(path_a=args.a, path_b=args.b, output_directory=args.o)
