@@ -283,7 +283,12 @@ def get_alleles_from_vcfs(ref_path, data_per_sample, chromosome, ref_start=None,
                     print("start:\t\t%d" % record.start)
 
                 for call in record.samples:
-                    gt = [int(call.data.GT[0]) if call.data.GT[0] != '.' else 0, int(call.data.GT[-1]) if call.data.GT[-1] != '.' else 0]
+                    gt = call.data.GT.split('/')
+                    for i in range(len(gt)):
+                        if gt[i] == '.':
+                            gt[i] = 0
+                        else:
+                            gt[i] = int(gt[i])
 
                     if debug:
                         print("gt:\t\t%d/%d" % (gt[0], gt[1]))

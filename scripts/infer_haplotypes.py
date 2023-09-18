@@ -1485,8 +1485,11 @@ def write_full_candidate_haplotypes_to_vcf(chromosome, ref_start, ref_stop, ref_
 
             if sequence != ref_sequence:
                 # path_id --> sequence_index
+
                 id_to_sequence_index[path_id] = len(sequences)
                 sequences.append(sequence)
+                print("ADDING path to alt alleles. path=%d alt=%d length=%d" % (path_id, id_to_sequence_index[path_id], len(sequence)))
+
             else:
                 print("SKIPPING sequence identical to reference with path ID: " + str(path_id))
 
