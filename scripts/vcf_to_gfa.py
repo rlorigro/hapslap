@@ -18,6 +18,9 @@ def parse_region_string(s):
 
 
 def main(vcf_path, ref_path, region_string, output_directory, keep_empty):
+    if not os.path.exists(output_directory):
+        os.makedirs(output_directory)
+
     data_per_sample = {"sample":{"vcf":vcf_path}}
     ref_sample_name = "ref"
     flank_length = 500
