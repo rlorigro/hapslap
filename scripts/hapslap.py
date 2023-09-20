@@ -71,7 +71,15 @@ def generate_sv_calls(
     vcf_paths_per_sample = dict()
     for sample,path in bams_per_sample.items():
         # TODO: add tandem bed path argument for sniffles
-        vcf_path = run_sniffles(ref_path=ref_path, output_dir=output_subdirectory, bam_path=path, n_threads=n_threads, bed_path=bed_path, other_args=other_args)
+        vcf_path = run_sniffles(
+            ref_path=ref_path,
+            output_dir=output_subdirectory,
+            bam_path=path,
+            sample_id=sample,
+            n_threads=n_threads,
+            bed_path=bed_path,
+            other_args=other_args
+        )
         indexed_vcf_path = compress_and_index_vcf(vcf_path=vcf_path, use_cache=False)
         vcf_paths_per_sample[sample] = indexed_vcf_path
 

@@ -9,7 +9,7 @@ import argparse
 import re
 
 
-def run_sniffles(ref_path, output_dir, bam_path, n_threads, other_args=None, bed_path=None, timeout=60*60):
+def run_sniffles(ref_path, output_dir, bam_path, n_threads, sample_id, other_args=None, bed_path=None, timeout=60*60):
     output_filename = os.path.basename(bam_path).replace(".bam", "_sniffles.vcf")
     output_path = os.path.join(output_dir, output_filename)
 
@@ -28,6 +28,7 @@ def run_sniffles(ref_path, output_dir, bam_path, n_threads, other_args=None, bed
         "--input", bam_path,
         "--vcf", output_path,
         "--reference", ref_path,
+        "--sample_id", sample_id,
         "--threads", str(n_threads),
         "--allow-overwrite",
         "--output-rnames"
