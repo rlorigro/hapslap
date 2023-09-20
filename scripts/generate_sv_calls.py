@@ -28,7 +28,7 @@ def run_sniffles(ref_path, output_dir, bam_path, n_threads, sample_id, other_arg
         "--input", bam_path,
         "--vcf", output_path,
         "--reference", ref_path,
-        "--sample_id", sample_id,
+        "--sample-id", sample_id,
         "--threads", str(n_threads),
         "--allow-overwrite",
         "--output-rnames"
