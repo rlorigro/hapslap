@@ -189,8 +189,11 @@ def run_graphchainer(output_directory, gfa_path, fasta_path, n_threads, args_ove
     return output_path
 
 
-def run_graphaligner(output_directory, gfa_path, fasta_path, n_threads, args_override=None):
-    output_path = os.path.join(output_directory, "reads_vs_graph.gaf")
+def run_graphaligner(output_directory, gfa_path, fasta_path, n_threads, args_override=None, filename=None):
+    if filename is None:
+        output_path = os.path.join(output_directory, "reads_vs_graph.gaf")
+    else:
+        output_path = os.path.join(output_directory, filename)
 
     # GraphAligner -g test/graph.gfa -f test/read.fa -a test/aln.gaf -x vg
 

@@ -8,7 +8,7 @@ import os
 from matplotlib import pyplot
 import matplotlib
 
-from modules.Vcf import vcf_to_graph,compress_and_index_vcf,remove_empty_nodes_from_variant_graph,index_vcf
+from modules.Vcf import vcf_to_graph,compress_and_index_vcf,remove_empty_nodes_from_variant_graph,index_vcf,get_alleles_from_vcfs,alleles_to_graph
 from modules.Cigar import get_haplotypes_of_region,char_is_query_move,char_is_ref_move
 from modules.IterativeHistogram import IterativeHistogram
 from modules.Align import run_minigraph,run_panaligner,run_graphchainer,run_graphaligner
@@ -16,7 +16,8 @@ from modules.IntervalGraph import IntervalGraph
 from modules.Bam import download_regions_of_bam
 from modules.Sequence import Sequence
 
-matplotlib.use('Agg')
+# matplotlib.use('Agg')
+
 
 class Alignment:
     def __init__(self, ref_name, query_name, n_delete, n_insert, n_match, n_mismatch, ref_start, ref_stop, query_start, query_stop):
@@ -158,72 +159,14 @@ class Results:
 
         return s
 
-
-def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, flank_length, buffer_length, output_directory, n_threads):
-    if not os.path.exists(output_directory):
-        os.makedirs(output_directory)
-
-    if vcf_path.endswith(".vcf"):
-        vcf_path = compress_and_index_vcf(vcf_path, use_cache=True)
-
-    sample_name = "test"
-
-    data_per_sample = defaultdict(dict)
-    data_per_sample[sample_name]["vcf"] = vcf_path
-
-    region_string = os.path.basename(vcf_path).replace(".vcf.gz","")
-    chromosome, ref_start, ref_stop = parse_region_string(region_string)
-
-    ref_name = "ref"
-
-    # First read the VCF and convert to a graph
-    graph, alleles = vcf_to_graph(
-        ref_path,
-        data_per_sample,
-        chromosome=chromosome,
-        ref_start=ref_start,
-        ref_stop=ref_stop,
-        ref_sample_name=ref_name,
-        flank_length=flank_length,
-        skip_incompatible=True
-    )
-
-    graph, edge_to_allele_index = remove_empty_nodes_from_variant_graph(graph, alleles)
-
-    output_gfa_path = os.path.join(output_directory, "variant_graph.gfa")
-    write_graph_to_gfa(output_gfa_path, graph, alleles)
-
-    fasta_path = os.path.join(output_directory, "ref_haps.fasta")
-
-    with open(fasta_path, 'w') as file:
-        for s in ref_sequences.values():
-            file.write(s.to_fasta_string())
-            file.write('\n')
-
-    # args = [
-    #     "-c",
-    #     "-g", str(20000),
-    #     "-k", str(14),
-    #     # "-f", "0.5",
-    #     "-r", "10000,20000",
-    #     "-n", "3,3",
-    #     # "-m", "30,20",
-    #     "-x", "lr",
-    # ]
-
-    # Align the relevant haplotypes to the variant graph
-    output_gaf_path = run_graphaligner(
-        output_directory=output_directory,
-        gfa_path=output_gfa_path,
-        fasta_path=fasta_path,
-        n_threads=n_threads
-    )
-
-    alleles_output_path = os.path.join(output_directory,"alleles.csv")
-    with open(alleles_output_path, 'w') as file:
-        file.write("id,start,stop,length,samples,is_left_flank,is_right_flank\n")
-        for i in range(len(alleles)):
-            file.write(str(i) + ',' + alleles[i].as_comma_separated_str() + '\n')
+def get_alignment_summary(
+        gaf_path,
+        ref_name,
+        alleles,
+        edge_to_allele_index,
+        ref_sequences,
+        flank_length,
+        buffer_length):
 
     # TODO: rewrite this to separate out allele stats vs literal node/edge graph stats
     alignments = defaultdict(list)
@@ -239,7 +182,7 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
     n_edges = len(edge_to_allele_index)
 
     # Iterate the alignments and gather some stats
-    with open(output_gaf_path, 'r') as file:
+    with open(gaf_path, 'r') as file:
         for l,line in enumerate(file):
             n_alignments += 1
             tokens = line.strip().split('\t')
@@ -358,19 +301,15 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
 
                 alignments[query_name].append(a)
 
-    print(vcf_path)
-
     query_lengths = dict()
     for s in ref_sequences.values():
         query_lengths[s.name] = len(s) - (flank_length - buffer_length)*2 + 1
 
-    # Once the alignment blocks are grouped by sample, they need to be sorted and overlap needs to be subtracted.
-    # Edit distance is not considered for overlap subtraction, which is crude, but easier to deal with for now.
-    # Worst case, a near-boundary overlapping non-match gets double counted, reducing the score
+    # Once the alignment blocks are grouped by sample, they need to be sorted and overlap needs to be addressed.
     query_coverage = defaultdict(float)
     for query_name in alignments:
-        print()
-        print(query_name)
+        # print()
+        # print(query_name)
         bases_covered = 0
 
         intervals = list()
@@ -409,11 +348,11 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
 
             n_avg_inserts = int(round(avg_insert_rate*float(component_span)))
             bases_covered += component_span - n_avg_inserts
-            print(component_span, n_avg_inserts)
+            # print(component_span, n_avg_inserts)
 
         l = query_lengths[query_name]
 
-        print(bases_covered, l)
+        # print(bases_covered, l)
 
         if l > 0:
             query_coverage[query_name] = float(bases_covered) / float(l)
@@ -457,6 +396,154 @@ def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, fla
     return results
 
 
+def evaluate_vcf_with_ref_alignment(vcf_path, ref_path, ref_sequences: dict, flank_length, buffer_length, output_directory, n_threads, samplewise=False):
+    if not os.path.exists(output_directory):
+        os.makedirs(output_directory)
+
+    if vcf_path.endswith(".vcf"):
+        print("Compressing and indexing...")
+        vcf_path = compress_and_index_vcf(vcf_path, timeout=60 * 60, use_cache=True)
+
+    if vcf_path.endswith(".gz") and not os.path.exists(vcf_path + ".tbi"):
+        index_vcf(vcf_path, timeout=60 * 60, use_cache=True)
+
+    placeholder_sample_name = "test"
+
+    data_per_sample = defaultdict(dict)
+    data_per_sample[placeholder_sample_name]["vcf"] = vcf_path
+
+    region_string = os.path.basename(vcf_path).replace(".vcf.gz","")
+    chromosome, ref_start, ref_stop = parse_region_string(region_string)
+
+    ref_name = "ref"
+
+    alleles = get_alleles_from_vcfs(
+        ref_path=ref_path,
+        data_per_sample=data_per_sample,
+        chromosome=chromosome,
+        ref_start=ref_start,
+        ref_stop=ref_stop,
+        skip_incompatible=True,
+        merged=True
+    )
+
+    if samplewise:
+        print("SAMPLEWISE")
+        samples = list({x.split('_')[0] for x in ref_sequences.keys()})
+        samplewise_alleles = {s:list() for s in samples}
+
+        print(vcf_path)
+
+        # Some tools will not generate properly merged VCFs, so their sample names will be arbitrary and should be skipped
+        for allele in alleles:
+            for s in allele.samples:
+                print(s)
+                if s in samplewise_alleles:
+                    samplewise_alleles[s].append(allele)
+
+        for sample_name in samples:
+            # First read the VCF and convert to a graph
+            graph, samplewise_alleles[sample_name] = alleles_to_graph(
+                alleles=samplewise_alleles[sample_name],
+                ref_path=ref_path,
+                chromosome=chromosome,
+                ref_start=ref_start,
+                ref_stop=ref_stop,
+                ref_sample_name=ref_name,
+                flank_length=flank_length
+            )
+
+            graph, edge_to_allele_index = remove_empty_nodes_from_variant_graph(graph, samplewise_alleles[sample_name])
+
+            output_gfa_path = os.path.join(output_directory, "variant_graph_" + sample_name + ".gfa")
+            write_graph_to_gfa(output_gfa_path, graph, samplewise_alleles[sample_name])
+
+            fasta_path = os.path.join(output_directory, "ref_haps_" + sample_name + ".fasta")
+
+            hap_sequences = {a:b for a,b in ref_sequences.items() if a.split("_")[0] == sample_name}
+
+            with open(fasta_path, 'w') as file:
+                for s in hap_sequences.values():
+                    file.write(s.to_fasta_string())
+                    file.write('\n')
+
+            # Align the relevant haplotypes to the variant graph
+            output_gaf_path = run_graphaligner(
+                output_directory=output_directory,
+                gfa_path=output_gfa_path,
+                fasta_path=fasta_path,
+                n_threads=n_threads,
+                filename="alignment_" + sample_name + ".gaf"
+            )
+
+            alleles_output_path = os.path.join(output_directory,"alleles_" + sample_name + ".csv")
+            with open(alleles_output_path, 'w') as file:
+                file.write("id,start,stop,length,samples,is_left_flank,is_right_flank\n")
+                for i in range(len(samplewise_alleles[sample_name])):
+                    file.write(str(i) + ',' + samplewise_alleles[sample_name][i].as_comma_separated_str() + '\n')
+
+            results = get_alignment_summary(
+                gaf_path=output_gaf_path,
+                ref_name=ref_name,
+                alleles=samplewise_alleles[sample_name],
+                edge_to_allele_index=edge_to_allele_index,
+                ref_sequences=hap_sequences,
+                flank_length=flank_length,
+                buffer_length=buffer_length
+            )
+
+            yield sample_name, results
+    else:
+        # If not samplewise, build a graph from every allele
+        graph, alleles = alleles_to_graph(
+            alleles=alleles,
+            ref_path=ref_path,
+            chromosome=chromosome,
+            ref_start=ref_start,
+            ref_stop=ref_stop,
+            ref_sample_name=ref_name,
+            flank_length=flank_length
+        )
+
+        graph, edge_to_allele_index = remove_empty_nodes_from_variant_graph(graph, alleles)
+
+        output_gfa_path = os.path.join(output_directory, "variant_graph.gfa")
+        write_graph_to_gfa(output_gfa_path, graph, alleles)
+
+        fasta_path = os.path.join(output_directory, "ref_haps.fasta")
+
+        with open(fasta_path, 'w') as file:
+            for s in ref_sequences.values():
+                file.write(s.to_fasta_string())
+                file.write('\n')
+
+        # Align the relevant haplotypes to the variant graph
+        output_gaf_path = run_graphaligner(
+            output_directory=output_directory,
+            gfa_path=output_gfa_path,
+            fasta_path=fasta_path,
+            n_threads=n_threads
+        )
+
+        alleles_output_path = os.path.join(output_directory,"alleles.csv")
+        with open(alleles_output_path, 'w') as file:
+            file.write("id,start,stop,length,samples,is_left_flank,is_right_flank\n")
+            for i in range(len(alleles)):
+                file.write(str(i) + ',' + alleles[i].as_comma_separated_str() + '\n')
+
+        results = get_alignment_summary(
+            gaf_path=output_gaf_path,
+            ref_name=ref_name,
+            alleles=alleles,
+            edge_to_allele_index=edge_to_allele_index,
+            ref_sequences=ref_sequences,
+            flank_length=flank_length,
+            buffer_length=buffer_length
+        )
+
+        yield "all",results
+
+
 def get_region_haps(region_string, cache_dir, tsv_path, column_names, flank_length, n_threads):
     chromosome, ref_start, ref_stop = parse_region_string(region_string)
 
@@ -487,7 +574,7 @@ def get_region_haps(region_string, cache_dir, tsv_path, column_names, flank_leng
     return ref_sequences
 
 
-def evaluate_directories(input_directories: list, ref_path, tsv_path, column_names, cache_dir, output_directory, n_threads):
+def evaluate_directories(input_directories: list, ref_path, tsv_path, column_names, cache_dir, output_directory, n_threads, samplewise=False):
     flank_length = 800
     buffer_length = 10
 
@@ -521,7 +608,7 @@ def evaluate_directories(input_directories: list, ref_path, tsv_path, column_nam
 
     # Iterate the regions, extract the ref haplotypes only once for each, and evaluate all input dirs for each
     for r,[region_string,input_set] in enumerate(region_strings.items()):
-        # if r == 4:
+        # if r == 1:
         #     break
 
         print(region_string, input_set)
@@ -545,7 +632,7 @@ def evaluate_directories(input_directories: list, ref_path, tsv_path, column_nam
             os.makedirs(region_output_subdirectory)
 
         with open(output_path, 'w') as file:
-            file.write("label,avg_identity,avg_query_coverage,node_coverage,edge_coverage,n_nodes,n_alignments\n")
+            file.write("sample,label,avg_identity,avg_query_coverage,node_coverage,edge_coverage,n_nodes,n_alignments\n")
 
             for i, input_directory in enumerate(input_directories):
                 label = os.path.basename(input_directory)
@@ -554,58 +641,61 @@ def evaluate_directories(input_directories: list, ref_path, tsv_path, column_nam
                 if not os.path.exists(vcf_path):
                     vcf_path = os.path.join(input_directory, region_string + ".vcf")
 
-                if vcf_path.endswith(".gz") and not os.path.exists(vcf_path + ".tbi"):
-                    index_vcf(vcf_path, timeout=60 * 60, use_cache=True)
-
                 output_subdirectory = os.path.join(region_output_subdirectory, label)
-                results = evaluate_vcf_with_ref_alignment(
+                iter = evaluate_vcf_with_ref_alignment(
                     vcf_path=vcf_path,
                     ref_path=ref_path,
                     ref_sequences=ref_sequences,
                     flank_length=flank_length,
                     buffer_length=buffer_length,
                     output_directory=output_subdirectory,
-                    n_threads=n_threads)
+                    n_threads=n_threads,
+                    samplewise=samplewise
+                )
 
-                n = 0.0
-                total_identity = 0.0
-                total_query_coverage = 0.0
+                for sample_name,result in iter:
+                    n = 0.0
+                    total_identity = 0.0
+                    total_query_coverage = 0.0
 
-                for name in results.iter_query_names():
-                    n += 1
-                    total_identity += results.identities[name]
-                    total_query_coverage += results.query_coverage[name]
-                    identities_per_dir[i].update(results.identities[name])
-                    query_coverages_per_dir[i].update(results.query_coverage[name])
+                    for name in result.iter_query_names():
+                        n += 1
+                        total_identity += result.identities[name]
 
-                avg_identity = total_identity/n
-                avg_query_coverage = total_query_coverage/n
+                        print(name, n, result.identities[name])
+                        total_query_coverage += result.query_coverage[name]
+                        identities_per_dir[i].update(result.identities[name])
+                        query_coverages_per_dir[i].update(result.query_coverage[name])
 
-                node_coverage = 0
-                if results.n_nodes > 0:
-                    node_coverage = float(results.nodes_covered) / float(results.n_nodes)
-                    node_coverage_per_dir[i].update(node_coverage)
+                    avg_identity = total_identity/n
+                    avg_query_coverage = total_query_coverage/n
 
-                edge_coverage = 0
-                if results.n_edges > 0:
-                    edge_coverage = float(results.edges_covered) / float(results.n_edges)
-                    edge_coverage_per_dir[i].update(edge_coverage)
+                    node_coverage = 0
+                    if result.n_nodes > 0:
+                        node_coverage = float(result.nodes_covered) / float(result.n_nodes)
+                        node_coverage_per_dir[i].update(node_coverage)
 
-                n_nodes_per_dir[i].update(results.n_nodes)
-                n_alignments_per_dir[i].update(results.n_alignments)
+                    edge_coverage = 0
+                    if result.n_edges > 0:
+                        edge_coverage = float(result.edges_covered) / float(result.n_edges)
+                        edge_coverage_per_dir[i].update(edge_coverage)
 
-                data = [
-                    label,
-                    avg_identity,
-                    avg_query_coverage,
-                    node_coverage,
-                    edge_coverage,
-                    results.n_nodes,
-                    results.n_alignments
-                ]
+                    n_nodes_per_dir[i].update(result.n_nodes)
+                    n_alignments_per_dir[i].update(result.n_alignments)
 
-                file.write(','.join(list(map(str,data))))
-                file.write('\n')
+                    data = [
+                        sample_name,
+                        label,
+                        avg_identity,
+                        avg_query_coverage,
+                        node_coverage,
+                        edge_coverage,
+                        result.n_nodes,
+                        result.n_alignments
+                    ]
+
+                    file.write(','.join(list(map(str,data))))
+                    file.write('\n')
 
     for h,histogram in enumerate(identities_per_dir):
         label = input_directories[h]
@@ -616,7 +706,7 @@ def evaluate_directories(input_directories: list, ref_path, tsv_path, column_nam
         axes[0][0].plot(x,y,alpha=0.6, color="C" + str(h), label=label, linewidth=0.5)
         axes[0][0].set_xlabel("Alignment identities")
         axes[0][0].set_ylabel("Cumulative density")
-        axes[0][0].set_ylim([0.4,1.1])
+        # axes[0][0].set_ylim([0.4,1.1])
         axes[0][0].set_xlim([-0.05,1.05])
         axes[0][0].invert_xaxis()
 
@@ -628,7 +718,7 @@ def evaluate_directories(input_directories: list, ref_path, tsv_path, column_nam
         axes[0][1].plot(x,y,alpha=0.6, color="C" + str(h), label=label, linewidth=0.5)
         axes[0][1].set_xlabel("Haplotype portion covered")
         axes[0][1].set_ylabel("Cumulative density")
-        axes[0][1].set_ylim([0.4,1.1])
+        # axes[0][1].set_ylim([0.4,1.1])
         axes[0][1].set_xlim([-0.05,1.05])
         axes[0][1].invert_xaxis()
 
@@ -679,7 +769,8 @@ def evaluate_directories(input_directories: list, ref_path, tsv_path, column_nam
     axes[0][0].legend()
 
     pyplot.savefig("comparison.png", dpi=400)
-    # pyplot.show()
+    pyplot.savefig("comparison.svg", dpi=200)
+    pyplot.show()
     pyplot.close()
 
 
@@ -742,6 +833,8 @@ if __name__ == "__main__":
         help="Which are the relevant columns of the Terra-style TSV (see tsv_path help msg) at the moment, column names must contain the substrings 'hap1' and 'hap2' (sorry)"
     )
 
+    parser.add_argument('--samplewise', action=argparse.BooleanOptionalAction)
+
     args = parser.parse_args()
 
     evaluate_directories(
@@ -751,6 +844,7 @@ if __name__ == "__main__":
         column_names=args.column_names,
         cache_dir=args.cache_dir,
         output_directory=args.output_dir,
-        n_threads=args.n_threads
+        n_threads=args.n_threads,
+        samplewise=args.samplewise
     )
 

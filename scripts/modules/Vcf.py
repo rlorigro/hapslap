@@ -249,7 +249,7 @@ class Allele:
 Given any number of VCFs, build a set of Allele objects which are merged by their hash(sequence,start,stop), retaining
 sample names for all merged alleles
 """
-def get_alleles_from_vcfs(ref_path, data_per_sample, chromosome, ref_start=None, ref_stop=None, debug=False, skip_incompatible=False, coord_only=False):
+def get_alleles_from_vcfs(ref_path, data_per_sample, chromosome, ref_start=None, ref_stop=None, debug=False, skip_incompatible=False, coord_only=False, merged=False):
     region_string = chromosome
 
     if ref_start is not None and ref_stop is not None:
@@ -261,6 +261,8 @@ def get_alleles_from_vcfs(ref_path, data_per_sample, chromosome, ref_start=None,
 
     alleles = dict()
 
+    # This assumes a different VCF for each sample, but that is not necessarily the case...
+    # TODO: refactor this to expect a merged VCF instead
     for sample_name,data in data_per_sample.items():
         vcf_path = data["vcf"]
 
@@ -268,6 +270,7 @@ def get_alleles_from_vcfs(ref_path, data_per_sample, chromosome, ref_start=None,
             if debug:
                 print(vcf_path)
 
+            print("reading VCF:", vcf_path)
             vcf = VCFReader(file)
 
             try:
@@ -388,13 +391,16 @@ def get_alleles_from_vcfs(ref_path, data_per_sample, chromosome, ref_start=None,
                             if h not in alleles:
                                 alleles[h] = a
 
-                            alleles[h].add_sample(sample_name)
+                            if merged:
+                                alleles[h].add_sample(call.sample)
+                            else:
+                                alleles[h].add_sample(sample_name)
 
     # Throw away hashes and keep unique alleles as a list
     return list(alleles.values())
 
 
-def vcf_to_graph(ref_path, data_per_sample, chromosome, ref_start, ref_stop, ref_sample_name, flank_length, skip_incompatible=False):
+def vcf_to_graph(ref_path, data_per_sample, chromosome, ref_start, ref_stop, ref_sample_name, flank_length, skip_incompatible=False, sample_set=None):
     ref_sequence = FastaFile(ref_path).fetch(chromosome)
 
     alleles = get_alleles_from_vcfs(
@@ -403,8 +409,89 @@ def vcf_to_graph(ref_path, data_per_sample, chromosome, ref_start, ref_stop, ref
         chromosome=chromosome,
         ref_start=ref_start,
         ref_stop=ref_stop,
-        skip_incompatible=skip_incompatible
+        skip_incompatible=skip_incompatible,
     )
+
+    ref_start -= flank_length
+    ref_stop += flank_length
+
+    # Construct a list of coordinates along the reference path which contain edges to VCF alleles
+    ref_edges = defaultdict(lambda: [[],[]])
+
+    for a,allele in enumerate(alleles):
+        ref_edges[allele.start][1].append(a)
+        ref_edges[allele.stop][0].append(a)
+
+    # Append dummy item at end of list to make one-pass iteration easier
+    ref_edges[ref_stop] = [[],[]]
+
+    # Sort the list by coord so that it can be iterated from left to right
+    ref_edges = list(sorted(ref_edges.items(), key=lambda x: x[0]))
+
+    graph = DiGraph()
+
+    ref_id_offset = len(alleles)
+
+    # -- Construct graph and ref alleles --
+
+    # Initialize vars that will be iteration dependent
+    prev_coord = ref_start
+    in_edges = []
+
+    # First generate nodes for all the known VCF alleles
+    for allele_index,allele in enumerate(alleles):
+        id = allele_index
+        graph.add_node(id)
+
+    # Construct ref backbone nodes with sufficient breakpoints to capture all in/out allele edges
+    r = ref_id_offset
+    for i,[coord,edges] in enumerate(ref_edges):
+        id = r
+
+        sequence = ref_sequence[prev_coord:coord]
+
+        # Create Allele object for this ref node and mimic the allele data structure
+        a = Allele(start=prev_coord, stop=coord, sequence=sequence)
+        a.add_sample(ref_sample_name)
+        alleles.append(a)
+
+        # Create the node in the graph data structure
+        graph.add_node(id)
+
+        prev_coord = coord
+        r += 1
+
+    # Annotate the ref alleles with flanking information
+    alleles[ref_id_offset].is_left_flank = True
+    alleles[-1].is_right_flank = True
+
+    # Construct edges from reference backbone to existing alleles and other backbone nodes
+    r = ref_id_offset
+    for i,[coord,edges] in enumerate(ref_edges):
+        id = r
+
+        for allele_index in in_edges:
+            other_id = allele_index
+            graph.add_edge(other_id,id, weight=0)
+
+        for allele_index in edges[1]:
+            other_id = allele_index
+            graph.add_edge(id,other_id, weight=0)
+
+        # Add edge to next ref sequence
+        if i < len(ref_edges) - 1:
+            next_id = r+1
+            graph.add_edge(id,next_id, weight=0)
+
+            r += 1
+
+        in_edges = edges[0]
+
+    return graph, alleles
+
+
+def alleles_to_graph(alleles, ref_path, chromosome, ref_start, ref_stop, ref_sample_name, flank_length):
+    ref_sequence = FastaFile(ref_path).fetch(chromosome)
 
     ref_start -= flank_length
     ref_stop += flank_length
@@ -621,7 +708,7 @@ def test_vcf():
         paths_2,
         output_path_2,
         sample_name_2,
-        edge_to_deletion_index=edge_to_deletion_index,
+        edge_to_allele_index=edge_to_deletion_index,
         # edge_to_deletion_index=None,
     )
 
