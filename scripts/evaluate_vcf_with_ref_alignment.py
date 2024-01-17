@@ -698,78 +698,157 @@ def evaluate_directories(input_directories: list, ref_path, tsv_path, column_nam
                     file.write('\n')
 
     for h,histogram in enumerate(identities_per_dir):
+        name = "Alignment identities"
+
         label = input_directories[h]
         label = label.strip('/').split('/')[-1]
 
         x = histogram.get_bin_centers()
         y = 1 - numpy.cumsum(histogram.get_normalized_histogram())
         axes[0][0].plot(x,y,alpha=0.6, color="C" + str(h), label=label, linewidth=0.5)
-        axes[0][0].set_xlabel("Alignment identities")
+        axes[0][0].set_xlabel(name)
         axes[0][0].set_ylabel("Cumulative density")
         # axes[0][0].set_ylim([0.4,1.1])
         axes[0][0].set_xlim([-0.05,1.05])
         axes[0][0].invert_xaxis()
 
+        hist_path = os.path.join(output_directory, name.lower().replace(" ","_"))
+        if not os.path.exists(hist_path):
+            os.makedirs(hist_path)
+
+        hist_path = os.path.join(hist_path, label + ".csv")
+
+        with open(hist_path, 'w') as file:
+            for i in range(len(x)):
+                file.write("%.6f,%.6f\n" % (float(x[i]),float(y[i])))
+
     for h,histogram in enumerate(query_coverages_per_dir):
+        name = "Haplotype portion covered"
+
         label = os.path.basename(input_directories[h])
 
         x = histogram.get_bin_centers()
         y = 1 - numpy.cumsum(histogram.get_normalized_histogram())
         axes[0][1].plot(x,y,alpha=0.6, color="C" + str(h), label=label, linewidth=0.5)
-        axes[0][1].set_xlabel("Haplotype portion covered")
+        axes[0][1].set_xlabel(name)
         axes[0][1].set_ylabel("Cumulative density")
         # axes[0][1].set_ylim([0.4,1.1])
         axes[0][1].set_xlim([-0.05,1.05])
         axes[0][1].invert_xaxis()
 
+        hist_path = os.path.join(output_directory, name.lower().replace(" ","_"))
+        if not os.path.exists(hist_path):
+            os.makedirs(hist_path)
+
+        hist_path = os.path.join(hist_path, label + ".csv")
+
+        with open(hist_path, 'w') as file:
+            for i in range(len(x)):
+                file.write("%.6f,%.6f\n" % (float(x[i]),float(y[i])))
+
     for h,histogram in enumerate(n_nodes_per_dir):
+        name = "# Nodes in graph"
+
         label = os.path.basename(input_directories[h])
 
         x = histogram.get_bin_centers()
         y = numpy.cumsum(histogram.get_normalized_histogram())
         axes[1][2].plot(x,y,alpha=0.6, color="C" + str(h), label=label, linewidth=0.5)
-        axes[1][2].set_xlabel("# Nodes in graph")
+        axes[1][2].set_xlabel(name)
         axes[1][2].set_ylabel("Cumulative density")
 
+        hist_path = os.path.join(output_directory, name.lower().replace(" ","_"))
+        if not os.path.exists(hist_path):
+            os.makedirs(hist_path)
+
+        hist_path = os.path.join(hist_path, label + ".csv")
+
+        with open(hist_path, 'w') as file:
+            for i in range(len(x)):
+                file.write("%.6f,%.6f\n" % (float(x[i]),float(y[i])))
+
+
     for h,histogram in enumerate(node_coverage_per_dir):
+        name = "Nodes (alleles) covered"
+
         label = os.path.basename(input_directories[h])
 
         x = histogram.get_bin_centers()
         y = 1 - numpy.cumsum(histogram.get_normalized_histogram())
         axes[1][0].plot(x,y,alpha=0.6, color="C" + str(h), label=label, linewidth=0.5)
-        axes[1][0].set_xlabel("Nodes (alleles) covered")
+        axes[1][0].set_xlabel(name)
         axes[1][0].set_ylabel("Cumulative density")
         axes[1][0].set_xlim([-0.05,1.05])
         axes[1][0].invert_xaxis()
 
+        hist_path = os.path.join(output_directory, name.lower().replace(" ","_"))
+        if not os.path.exists(hist_path):
+            os.makedirs(hist_path)
+
+        hist_path = os.path.join(hist_path, label + ".csv")
+
+        with open(hist_path, 'w') as file:
+            for i in range(len(x)):
+                file.write("%.6f,%.6f\n" % (float(x[i]),float(y[i])))
+
+
     for h,histogram in enumerate(edge_coverage_per_dir):
+        name = "Edges covered"
+
         label = os.path.basename(input_directories[h])
 
         x = histogram.get_bin_centers()
         y = 1 - numpy.cumsum(histogram.get_normalized_histogram())
         axes[1][1].plot(x,y,alpha=0.6, color="C" + str(h), label=label, linewidth=0.5)
-        axes[1][1].set_xlabel("Edges covered")
+        axes[1][1].set_xlabel(name)
         axes[1][1].set_ylabel("Cumulative density")
         axes[1][1].set_xlim([-0.05,1.05])
         axes[1][1].invert_xaxis()
 
+        hist_path = os.path.join(output_directory, name.lower().replace(" ","_"))
+        if not os.path.exists(hist_path):
+            os.makedirs(hist_path)
+
+        hist_path = os.path.join(hist_path, label + ".csv")
+
+        with open(hist_path, 'w') as file:
+            for i in range(len(x)):
+                file.write("%.6f,%.6f\n" % (float(x[i]),float(y[i])))
+
+
     for h,histogram in enumerate(n_alignments_per_dir):
+        name = "# Alignments"
+
         label = os.path.basename(input_directories[h])
 
         x = histogram.get_bin_centers()
         y = numpy.cumsum(histogram.get_normalized_histogram())
         axes[0][2].plot(x,y,alpha=0.6, color="C" + str(h), label=label, linewidth=0.5)
-        axes[0][2].set_xlabel("# Alignments")
+        axes[0][2].set_xlabel(name)
         axes[0][2].set_ylabel("Cumulative density")
         axes[0][2].set_ylim([0.4,1.1])
+
+        hist_path = os.path.join(output_directory, name.lower().replace(" ","_"))
+        if not os.path.exists(hist_path):
+            os.makedirs(hist_path)
+
+        hist_path = os.path.join(hist_path, label + ".csv")
+
+        with open(hist_path, 'w') as file:
+            for i in range(len(x)):
+                file.write("%.6f,%.6f\n" % (float(x[i]),float(y[i])))
+
 
     # axes[1][2].axis("off")
 
     fig.set_size_inches(14,8)
     axes[0][0].legend()
 
-    pyplot.savefig("comparison.png", dpi=400)
-    pyplot.savefig("comparison.svg", dpi=200)
+    plot_path_prefix = os.path.join(output_directory, "comparison")
+
+
+    pyplot.savefig(plot_path_prefix + ".png", dpi=400)
+    pyplot.savefig(plot_path_prefix + ".svg", dpi=200)
     pyplot.show()
     pyplot.close()
 
